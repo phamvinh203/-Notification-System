@@ -1,12 +1,15 @@
 // Demo end-to-end (spec mục 8). Chạy khi server đang chạy: npm run dev (terminal 1) → npm run demo (terminal 2).
 const BASE = process.env.API_URL ?? 'http://localhost:3000';
+// server bật auth (API_KEY) thì demo gửi kèm header — VD: API_KEY=dev-secret-123 npm run demo
+const headers: Record<string, string> = { 'content-type': 'application/json' };
+if (process.env.API_KEY) headers['x-api-key'] = process.env.API_KEY;
 
 interface EnqueueRes { id: string; status: string }
 
 async function send(payload: Record<string, unknown>): Promise<EnqueueRes> {
   const res = await fetch(`${BASE}/notifications`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`POST fail ${res.status}: ${await res.text()}`);
@@ -40,7 +43,7 @@ async function main(): Promise<void> {
   console.log('\nĐợi 12s cho worker xử lý 3 job đầu...');
   await sleep(12_000);
   for (const id of ids) {
-    const res = await fetch(`${BASE}/notifications/${id}`);
+    const res = await fetch(`${BASE}/notifications/${id}`, { headers });
     const { notification, events } = await res.json() as { notification: { status: string }; events: { event: string; detail: string | null }[] };
     console.log(`\n--- ${id} → ${notification.status}`);
     for (const e of events) console.log(`  ${e.event}${e.detail ? ` (${e.detail})` : ''}`);

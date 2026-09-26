@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "concurrently -k -n api,worker -c blue,green \"tsx watch src/index.ts\" \"tsx watch src/start-worker.ts\"",
+    "dev:api": "tsx watch src/index.ts",
+    "dev:worker": "tsx watch src/start-worker.ts",
     "demo": "tsx src/demo.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "engines": {
     "node": ">=22.5"
@@ -20,7 +24,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "concurrently": "^10.0.5",
     "tsx": "^4.20.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^5.0.2"
   }
 }

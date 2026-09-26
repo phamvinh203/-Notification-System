@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { enqueueNotification, notificationQueue } from '../queue/queue.js';
-import { getNotification, listNotifications, recordEvent, setStatus } from '../db.js';
+import { countNotifications, getNotification, listNotifications, recordEvent, setStatus } from '../db.js';
 
 const createSchema = z.object({
   channel: z.enum(['email', 'push', 'sms']),
@@ -9,6 +9,13 @@ const createSchema = z.object({
   subject: z.string().optional(),
   body: z.string().min(1),
   sendAt: z.string().datetime().optional(),
+});
+
+const listQuerySchema = z.object({
+  status: z.string().optional(),
+  channel: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
 });
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
@@ -21,9 +28,19 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(202).send(result);
   });
 
-  app.get('/notifications', async (req) => {
-    const { status, channel } = req.query as { status?: string; channel?: string };
-    return listNotifications({ status, channel });
+  app.get('/notifications', async (req, reply) => {
+    const parsed = listQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    const { status, channel, limit, offset } = parsed.data;
+    const filter = { status, channel };
+    return {
+      items: listNotifications(filter, { limit, offset }),
+      total: countNotifications(filter),
+      limit,
+      offset,
+    };
   });
 
   app.get('/notifications/:id', async (req, reply) => {

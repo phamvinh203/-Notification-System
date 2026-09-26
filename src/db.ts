@@ -73,11 +73,31 @@ export function getNotification(id: string): { notification: NotificationRow; ev
   return { notification, events };
 }
 
-export function listNotifications(filter: { status?: string; channel?: string }): NotificationRow[] {
+export function listNotifications(
+  filter: { status?: string; channel?: string },
+  page: { limit: number; offset: number },
+): NotificationRow[] {
   const clauses: string[] = [];
   const params: string[] = [];
   if (filter.status) { clauses.push('status = ?'); params.push(filter.status); }
   if (filter.channel) { clauses.push('channel = ?'); params.push(filter.channel); }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  return db.prepare(`SELECT * FROM notifications ${where} ORDER BY created_at DESC`).all(...params) as unknown as NotificationRow[];
+  return db.prepare(
+    `SELECT * FROM notifications ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+  ).all(...params, page.limit, page.offset) as unknown as NotificationRow[];
+}
+
+export function countNotifications(filter: { status?: string; channel?: string }): number {
+  const clauses: string[] = [];
+  const params: string[] = [];
+  if (filter.status) { clauses.push('status = ?'); params.push(filter.status); }
+  if (filter.channel) { clauses.push('channel = ?'); params.push(filter.channel); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const row = db.prepare(`SELECT COUNT(*) AS total FROM notifications ${where}`).get(...params) as { total: number };
+  return row.total;
+}
+
+// helper cho test — xoá sạch dữ liệu giữa các test case
+export function clearTables(): void {
+  db.exec('DELETE FROM delivery_events; DELETE FROM notifications;');
 }
