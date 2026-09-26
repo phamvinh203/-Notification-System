@@ -141,6 +141,24 @@ describe.skipIf(!hasRedis)('API integration (cần Redis)', () => {
       expect(res.statusCode).toBe(401);
     });
 
+    it('Authorization: Bearer <key> cũng được chấp nhận (Prometheus scrape dùng Bearer)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/notifications',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` },
+        payload: { channel: 'email', recipient: 'bearer@example.com', body: 'x' },
+      });
+      expect(res.statusCode).toBe(202);
+      // bearer sai vẫn 401
+      const bad = await app.inject({
+        method: 'POST',
+        url: '/notifications',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer wrong' },
+        payload: { channel: 'email', recipient: 'bearer@example.com', body: 'x' },
+      });
+      expect(bad.statusCode).toBe(401);
+    });
+
     it('DELETE và replay là thao tác ghi → thiếu key vẫn 401', async () => {
       const delRes = await del('/notifications/anything', null);
       expect(delRes.statusCode).toBe(401);

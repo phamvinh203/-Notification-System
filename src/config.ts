@@ -7,4 +7,6 @@ export const config = {
   apiKey: process.env.API_KEY || null,
   // 0 = tắt rate limit; đặt thấp (VD 3) để demo 429 nhanh
   rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? 10),
+  // thư mục dashboard build — Docker đặt /app/dashboard-dist; local mặc định dashboard/dist nếu có
+  dashboardDist: process.env.DASHBOARD_DIST || null,
 };

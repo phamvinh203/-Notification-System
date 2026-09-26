@@ -1,10 +1,12 @@
-node_modules
+**/node_modules
+**/dist
 .git
 .github
 .tmp
 data
 docs
 .superpowers
+ops
 *.db
 *.db-wal
 *.db-shm

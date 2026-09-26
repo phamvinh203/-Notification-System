@@ -197,7 +197,15 @@ docker-compose.yml        # 3 service: redis / api / worker
 6. **Auth mới ở mức API key tĩnh** — chưa có multi-tenant, hết hạn, thu hồi key.
 7. **Metrics mới là gauges trạng thái** — chưa có histogram latency, chưa gắn Prometheus/Grafana service vào compose.
 
-> Đã hoàn thành: nền tảng chất lượng (test, Docker, CI, phân trang, auth, tách process) — 2026-09-26; tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) — 2026-09-26; kiến trúc nâng cao (outbox pattern, Prometheus metrics) — 2026-09-26.
+> Đã hoàn thành: nền tảng chất lượng (test, Docker, CI, phân trang, auth, tách process) — 2026-09-26; tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) — 2026-09-26; kiến trúc nâng cao (outbox pattern, Prometheus metrics) — 2026-09-26; dashboard frontend — 2026-09-26; **ship v1.0: Fastify serve dashboard same-origin (SPA fallback theo Accept header) + Prometheus & Grafana vào compose + Dockerfile multi-stage build UI** — 2026-09-26.
+
+### 3.11 Ship v1.0 — một lệnh có cả sản phẩm + monitoring
+
+- **Fastify serve dashboard**: khi có `dashboard/dist` (biến `DASHBOARD_DIST`, Dockerfile multi-stage build sẵn trong image), api container phục vụ UI same-origin tại `/`.
+- **SPA fallback theo Accept header**: browser navigate (Accept chứa `text/html`) tới bất kỳ route nào cũng nhận `index.html` — gõ trực tiếp `localhost:3000/notifications/<id>` vẫn vào UI; curl/fetch/Prometheus (Accept khác) đi thẳng API; `/admin/queues`, `/metrics`, `/health` được miễn để Bull Board/raw metrics phục vụ riêng.
+- **Dockerfile 2 stage**: stage `ui-build` chạy `npm ci && npm run build` cho dashboard; stage runtime copy `dist` vào `/app/dashboard-dist`.
+- **Prometheus** (`ops/prometheus/prometheus.yml`): scrape `api:3000/metrics` mỗi 15s bằng `Authorization: Bearer <API_KEY>` — lý do auth hook nhận thêm Bearer.
+- **Grafana** (`ops/grafana/`): datasource Prometheus + dashboard "Notification System" provision tự động (stat trạng thái, timeseries `bullmq_jobs`/`outbox_pending`, barchart theo kênh). Port 3001, login admin/admin (demo).
 
 ---
 
@@ -215,4 +223,5 @@ docker-compose.yml        # 3 service: redis / api / worker
 | `66840a7` | Fix: khai báo ioredis trực tiếp (pin v5 khớp BullMQ) + chặn race DELETE-vs-worker (500 → 409) |
 | `58588b6`…`6f2ff7f` | Nền tảng chất lượng (buildApp, tách entry, /health, phân trang, auth, 30 test, Docker, CI) + tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) |
 | `cbed309` | Kiến trúc nâng cao: outbox pattern (transaction DB+outbox, dispatcher, guard cancelled) + Prometheus /metrics + fix healthcheck IPv6 |
-| *(chưa commit)* | Dashboard frontend: 4 trang (Tổng quan/Danh sách/Chi tiết/Tạo mới) + đổi chính sách auth reads-open + GUI test bằng browser |
+| `9065480` | Dashboard frontend: 4 trang (Tổng quan/Danh sách/Chi tiết/Tạo mới) + đổi chính sách auth reads-open + GUI test bằng browser |
+| *(chưa commit)* | Ship v1.0: Fastify serve dashboard (SPA fallback Accept header), Dockerfile multi-stage build UI, Prometheus + Grafana vào compose, auth nhận thêm Bearer |

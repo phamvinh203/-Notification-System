@@ -1,6 +1,5 @@
-// dev: '' → gọi qua proxy /api (vite.config); build same-origin: set VITE_API_BASE=''
-// (mặc định '' nghĩa là cùng origin với backend khi serve dist từ Fastify)
-const BASE = import.meta.env.VITE_API_BASE ?? '/api';
+// dev (vite): '/api' qua proxy; build same-origin (Fastify serve dist): '' — gọi thẳng gốc
+const BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? '/api' : '');
 export const apiBase = BASE;
 
 export type Channel = 'email' | 'push' | 'sms' | 'webhook';

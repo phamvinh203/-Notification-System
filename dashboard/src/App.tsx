@@ -12,6 +12,9 @@ import {
 } from '@phosphor-icons/react';
 import { apiBase } from './api';
 
+// dev: Bull Board chạy ở backend :3000 (qua link tuyệt đối); same-origin build: path gốc
+const BULL_BOARD_URL = import.meta.env.DEV ? 'http://localhost:3000/admin/queues' : '/admin/queues';
+
 const NAV: Array<{ to: string; label: string; icon: typeof ChartLineUp; end?: boolean }> = [
   { to: '/', label: 'Tổng quan', icon: ChartLineUp, end: true },
   { to: '/notifications', label: 'Thông báo', icon: ListChecks },
@@ -86,7 +89,7 @@ export default function App() {
         </nav>
         <div className="mt-auto border-t border-line pt-3">
           <a
-            href="/admin/queues"
+            href={BULL_BOARD_URL}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium text-muted-fg transition-colors hover:bg-muted hover:text-fg"

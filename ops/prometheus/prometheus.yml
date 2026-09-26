@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: notification-api
+    metrics_path: /metrics
+    # API bật auth API_KEY — Prometheus scrape bằng Authorization: Bearer
+    authorization:
+      type: Bearer
+      credentials: dev-secret-123
+    static_configs:
+      - targets: ['api:3000']

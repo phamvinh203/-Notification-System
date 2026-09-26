@@ -19,6 +19,7 @@ services:
       # demo key cho compose — đổi hoặc xóa để tắt auth
       API_KEY: dev-secret-123
       FAIL_RATE: "0.3"
+      DASHBOARD_DIST: /app/dashboard-dist
     volumes:
       - ./data:/app/data
     depends_on:
@@ -43,3 +44,25 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana-oss:11.1.0
+    ports:
+      - "3001:3000"
+    environment:
+      # demo — đổi password khi dùng thật
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus

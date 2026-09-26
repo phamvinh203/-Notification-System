@@ -22,12 +22,15 @@ npm run dev
 #   npm run dev:worker
 ```
 
-### Cách 2 — Docker (đúng kiểu production: 3 container riêng biệt)
+### Cách 2 — Docker (sản phẩm hoàn chỉnh: 1 lệnh có cả UI + monitoring)
 
 ```bash
 docker compose up --build
-# → redis (queue), api (REST + Bull Board), worker (xử lý job)
+# → redis (queue), api (REST + dashboard UI + Bull Board), worker,
+#   prometheus (:9090), grafana (:3001 — user admin / pass admin)
 ```
+
+Mở **http://localhost:3000** — dashboard UI chạy same-origin với API (browser gõ trực tiếp URL con như `/notifications` cũng vào được UI nhờ SPA fallback theo Accept header; curl/fetch vẫn nhận JSON). Grafana tại **http://localhost:3001** với dashboard "Notification System" provision sẵn.
 
 Compose đặt sẵn `API_KEY=dev-secret-123` — mọi request cần header `x-api-key: dev-secret-123` (xem mục [Auth](#auth-api-key)).
 
@@ -54,7 +57,7 @@ npm run demo
 Set biến `API_KEY` → bật auth với chính sách **reads-open**:
 
 - **Đọc mở (không cần key)**: mọi `GET` — danh sách, chi tiết, `/templates`, `/metrics`. Browser mở trực tiếp URL được.
-- **Cần key** (header `x-api-key`): mọi thao tác ghi — `POST` tạo/replay, `DELETE` hủy — và **Bull Board** `/admin/queues`.
+- **Cần key** (header `x-api-key` **hoặc** `Authorization: Bearer <key>` — Prometheus scrape dùng Bearer): mọi thao tác ghi — `POST` tạo/replay, `DELETE` hủy — và **Bull Board** `/admin/queues`.
 - `GET /health` luôn mở (dùng cho docker healthcheck).
 - Không set `API_KEY` → tắt auth hoàn toàn (tiện dev local).
 
@@ -64,7 +67,11 @@ curl -X POST http://localhost:3000/notifications -H "x-api-key: dev-secret-123" 
 
 ## Dashboard (frontend)
 
-Dashboard React (Vite + TS + Tailwind v4) ở thư mục `dashboard/` — dark glassmorphism, có light mode:
+Dashboard React (Vite + TS + Tailwind v4) ở thư mục `dashboard/` — dark glassmorphism, có light mode.
+
+**Chạy bằng Docker**: có sẵn trong image, mở `http://localhost:3000` luôn.
+
+**Chạy dev (hot reload)**:
 
 ```bash
 # terminal 3 (sau khi npm run dev backend đang chạy):
@@ -74,6 +81,13 @@ npm run dev        # http://localhost:5173 — proxy /api về :3000
 ```
 
 4 trang: **Tổng quan** (metrics realtime 3s, có pause), **Thông báo** (bảng lọc/phân trang, hủy/replay), **Chi tiết** (timeline delivery events tự live khi job đang chạy), **Tạo mới** (chọn kênh, template + params, preview payload, idempotency key). API key cho thao tác ghi nhập ở thanh trên cùng (lưu localStorage).
+
+## Monitoring (Prometheus + Grafana)
+
+`docker compose up` kèm sẵn:
+
+- **Prometheus** `http://localhost:9090` — scrape `/metrics` của api mỗi 15s (auth bằng `Authorization: Bearer`, cấu hình trong `ops/prometheus/prometheus.yml`)
+- **Grafana** `http://localhost:3001` — login `admin` / `admin`, dashboard **"Notification System"** provision tự động (stat theo trạng thái, timeseries queue BullMQ, bar theo kênh, outbox pending)
 
 ## API
 
