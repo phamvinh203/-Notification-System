@@ -29,7 +29,7 @@ Gửi ngay: job vào queue chạy liền.
 Hẹn giờ:  client truyền sendAt → job được delay tới đúng thời điểm.
 ```
 
-Hiện tại **API và Worker chạy chung 1 process** (`npm run dev` khởi động cả hai, kèm Bull Board).
+Hiện tại **API và Worker đã tách thành 2 entry riêng** (`src/index.ts` và `src/start-worker.ts`): local `npm run dev` chạy cả hai bằng `concurrently`, còn Docker compose chạy 3 container độc lập (`redis` + `api` + `worker`) — scale worker không ảnh hưởng API.
 
 ---
 
@@ -39,15 +39,16 @@ Hiện tại **API và Worker chạy chung 1 process** (`npm run dev` khởi đ�
 
 | Method | Path | Chức năng | Ghi chú |
 |---|---|---|---|
+| `GET` | `/health` | Health check | Luôn mở, không cần API key — dùng cho docker healthcheck |
 | `POST` | `/notifications` | Tạo yêu cầu gửi thông báo | Body: `{channel, recipient, subject?, body, sendAt?}`. Trả `202 {id, status}` |
-| `GET` | `/notifications` | Danh sách | Lọc được theo `status`, `channel`; sắp xếp mới nhất trước |
+| `GET` | `/notifications` | Danh sách, có **phân trang** | Lọc theo `status`, `channel`; `limit` (1–100, default 20), `offset`. Trả `{items, total, limit, offset}` |
 | `GET` | `/notifications/:id` | Chi tiết | Trả notification + **timeline delivery events** |
 | `DELETE` | `/notifications/:id` | Hủy notification | Chỉ hủy được khi đang `scheduled`, ngược lại trả `409` |
 | `GET` | `/admin/queues` | Bull Board UI | Xem queue/retry/delayed job trực quan trên trình duyệt |
 
-- Body đầu vào được **validate bằng Zod** (`src/api/routes.ts`): `channel` chỉ nhận `email | push | sms`, sai format trả `400` kèm chi tiết lỗi.
+- Body đầu vào được **validate bằng Zod** (`src/api/routes.ts`): `channel` chỉ nhận `email | push | sms`, sai format trả `400` kèm chi tiết lỗi. Query params phân trang cũng validate bằng Zod (`limit=0` → 400).
 - `id` là UUID do hệ thống tự sinh.
-- Có trường `sendAt` (ISO datetime) → thông báo chuyển thành **hẹn giờ**: job được delay đến đúng mốc thời gian đó, trạng thái ban đầu là `scheduled`.
+- Có trường `sendAt` (ISO datetime) → thông báo chuyển thành **hẹn giờ**: job được delay đến đúng mốc thời gian đó, trạng thái ban đầu là `scheduled` (nếu `sendAt` ở quá khứ thì coi như gửi ngay, nhưng vẫn lưu lại mốc client yêu cầu).
 
 ### 3.2 Hàng đợi BullMQ + Redis (`src/queue/queue.ts`)
 
@@ -89,8 +90,17 @@ Hiện tại **API và Worker chạy chung 1 process** (`npm run dev` khởi đ�
 ### 3.7 Quan sát hệ thống
 
 - **Bull Board UI** tại `http://localhost:3000/admin/queues` — xem job đang chờ, đang chạy, delayed, đã retry, đã fail ngay trên trình duyệt.
-- Demo script end-to-end (`npm run demo`, chạy song song với server): gửi thông báo cả 3 kênh + 1 job hẹn giờ sau 30s, chờ worker xử lý rồi in timeline từng job ra terminal.
+- Demo script end-to-end (`npm run demo`, chạy song song với server): gửi thông báo cả 3 kênh + 1 job hẹn giờ sau 30s, chờ worker xử lý rồi in timeline từng job ra terminal. Tự gửi header `x-api-key` khi set biến `API_KEY`.
 - Fastify bật logger mặc định (JSON log ra terminal).
+
+### 3.8 Nền tảng chất lượng
+
+- **Auth API key**: set biến `API_KEY` → mọi endpoint `/notifications*` và Bull Board `/admin/queues` yêu cầu header `x-api-key`, sai/thiếu trả `401`. `/health` luôn mở. Không set biến → tắt auth (dev local). Hiện thực qua preHandler hook trong `src/app.ts`.
+- **Phân trang** cho danh sách: `{items, total, limit, offset}` thay vì trả toàn bộ mảng.
+- **30 test tự động** (vitest): db layer (unit), REST API + auth + phân trang (integration qua Fastify `inject`), queue scheduling, worker + retry logic (integration với Redis thật, mock provider deterministic để assert đúng số lần retry). Test cần Redis **tự skip** khi Redis không chạy — local không bật Docker vẫn chạy được bộ unit.
+- **Docker hóa**: `Dockerfile` (node:22-alpine, chạy TS trực tiếp bằng tsx) + `docker-compose.yml` với 3 service `redis` / `api` / `worker`, có healthcheck, SQLite persist qua volume `./data`.
+- **CI**: GitHub Actions chạy `typecheck` + `test` trên mỗi push/PR, cấp service Redis 7.
+- **Tách entry API / Worker**: `src/index.ts` (API) và `src/start-worker.ts` (worker, có graceful shutdown SIGINT/SIGTERM) — chạy chung bằng `npm run dev` hoặc tách riêng `npm run dev:api` / `npm run dev:worker`.
 
 ---
 
@@ -102,6 +112,7 @@ Hiện tại **API và Worker chạy chung 1 process** (`npm run dev` khởi đ�
 | `REDIS_URL` | `redis://localhost:6379` | Địa chỉ Redis |
 | `FAIL_RATE` | `0.3` | Xác suất mock provider fail (0–1). Đặt `0.5`+ để thấy retry rõ |
 | `DB_PATH` | `notifications.db` | Đường dẫn file SQLite |
+| `API_KEY` | *(không set — tắt auth)* | Set thì yêu cầu header `x-api-key` cho `/notifications*` và `/admin/queues` |
 
 ---
 
@@ -109,12 +120,14 @@ Hiện tại **API và Worker chạy chung 1 process** (`npm run dev` khởi đ�
 
 ```
 src/
-├── index.ts              # Bootstrap: Fastify + routes + Bull Board + worker (1 process)
+├── index.ts              # Entry API: bootstrap app, listen
+├── start-worker.ts       # Entry Worker: chạy worker + graceful shutdown
+├── app.ts                # buildApp(): Fastify + /health + auth hook + routes + Bull Board
 ├── config.ts             # Đọc biến môi trường
-├── db.ts                 # SQLite: schema, CRUD notification + delivery events
+├── db.ts                 # SQLite: schema, CRUD + phân trang + delivery events
 ├── demo.ts               # Script demo end-to-end
 ├── api/
-│   └── routes.ts         # 4 REST endpoints + Zod validation
+│   └── routes.ts         # REST endpoints + Zod validation (body + query phân trang)
 ├── queue/
 │   ├── queue.ts          # BullMQ Queue + logic enqueue (delay, retry, jobId)
 │   └── worker.ts         # Worker consume + retry + ghi events
@@ -122,6 +135,11 @@ src/
     ├── types.ts          # Interface NotificationProvider
     ├── email.ts / sms.ts / push.ts   # 3 mock providers
     └── index.ts          # Registry: channel → provider
+
+tests/                    # vitest: db (unit), api/queue/worker (integration, tự skip khi không có Redis)
+Dockerfile                # node:22-alpine, chạy TS bằng tsx
+docker-compose.yml        # 3 service: redis / api / worker
+.github/workflows/ci.yml  # CI: typecheck + test (service Redis)
 ```
 
 ---
@@ -130,16 +148,15 @@ src/
 
 Đây là những điểm **cố ý chưa làm** — là hướng phát triển tiếp theo của dự án:
 
-1. **Chưa có test tự động** — không có unit/integration test nào.
-2. **Chưa có auth** — API mở hoàn toàn, ai gọi cũng được (kể cả DELETE và `/admin/queues`).
-3. **Chưa có pagination** cho `GET /notifications` — trả toàn bộ kết quả.
-4. **API và Worker chung 1 process** — chưa tách riêng để scale worker độc lập.
-5. **Provider vẫn là mock** — chưa gửi ra ngoài thế giới thật.
-6. **SQLite thay cho DB production** — phù hợp demo, chưa phù hợp nhiều instance ghi đồng thời.
-7. **Chưa có Dockerfile cho app** — `docker-compose.yml` mới chỉ chứa Redis.
-8. **Chưa có idempotency key** — client gửi lại 2 lần sẽ tạo 2 notification.
-9. **Job `failed` chưa có cơ chế đẩy lại** (replay dead job).
-10. **Chưa có CI/CD**, chưa có health check endpoint, chưa có OpenAPI docs.
+1. **Provider vẫn là mock** — chưa gửi ra ngoài thế giới thật.
+2. **SQLite thay cho DB production** — phù hợp demo, chưa phù hợp nhiều instance ghi đồng thời.
+3. **Chưa có idempotency key** — client gửi lại 2 lần sẽ tạo 2 notification.
+4. **Job `failed` chưa có cơ chế đẩy lại** (replay dead job).
+5. **Chưa có rate limiting / throttle** theo recipient.
+6. **Chưa có OpenAPI docs** tự sinh từ zod schema.
+7. **Auth mới ở mức API key tĩnh** — chưa có multi-tenant, hết hạn, thu hồi key.
+
+> Đã hoàn thành từ đợt "nền tảng chất lượng" (2026-09-26): test tự động (30 test), Docker hóa 3 service, CI GitHub Actions, phân trang, auth API key, tách entry API/worker, health check.
 
 ---
 
@@ -155,3 +172,4 @@ src/
 | `6b2f7a2` | REST API + Bull Board UI + bootstrap |
 | `c13dd29` | Demo script end-to-end + README |
 | `66840a7` | Fix: khai báo ioredis trực tiếp (pin v5 khớp BullMQ) + chặn race DELETE-vs-worker (500 → 409) |
+| *(chưa commit)* | Nền tảng chất lượng: tách buildApp + entry API/worker, /health, phân trang, auth API key, 30 test vitest, Dockerfile + compose 3 service, CI GitHub Actions |

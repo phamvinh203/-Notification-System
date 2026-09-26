@@ -3,3 +3,42 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      REDIS_URL: redis://redis:6379
+      DB_PATH: /app/data/notifications.db
+      # demo key cho compose — đổi hoặc xóa để tắt auth
+      API_KEY: dev-secret-123
+      FAIL_RATE: "0.3"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build: .
+    command: ["npx", "tsx", "src/start-worker.ts"]
+    environment:
+      REDIS_URL: redis://redis:6379
+      DB_PATH: /app/data/notifications.db
+      FAIL_RATE: "0.3"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
