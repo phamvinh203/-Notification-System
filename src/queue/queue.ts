@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
 import { config } from '../config.js';
-import { createNotification, findByIdempotencyKey, getNotification, recordEvent, setStatus, type Channel, type Status } from '../db.js';
+import {
+  createNotificationWithOutbox, findByIdempotencyKey, getNotification,
+  getPendingOutbox, markOutboxDispatched, recordEvent, setStatus, type Channel, type Status,
+} from '../db.js';
 
 export const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
 
@@ -71,12 +74,18 @@ export async function enqueueNotification(input: EnqueueInput): Promise<EnqueueR
   const isScheduled = delay !== undefined && delay > 0;
   const status: Status = isScheduled ? 'scheduled' : 'queued';
 
+  // OUTBOX PATTERN: intent đẩy job ghi CÙNG transaction với row notification —
+  // không còn trường hợp "ghi DB xong, chết trước khi add job" (dual-write problem).
+  // Job thực sự được dispatcher (worker process) đọc outbox rồi push lên BullMQ.
   try {
-    createNotification({
+    createNotificationWithOutbox({
       id, channel: input.channel, recipient: input.recipient, subject: input.subject,
       body: input.body, status, scheduled_at: scheduledAt?.toISOString() ?? null,
       idempotency_key: input.idempotencyKey ?? null,
-    });
+    }, JSON.stringify({
+      channel: input.channel, recipient: input.recipient, subject: input.subject,
+      body: input.body, priority: input.priority, delay,
+    }));
   } catch {
     // race: 2 request cùng key chạy song song — unique index chặn, trả notification của request thắng
     if (input.idempotencyKey) {
@@ -86,9 +95,25 @@ export async function enqueueNotification(input: EnqueueInput): Promise<EnqueueR
     throw new Error('không tạo được notification (idempotency conflict không tìm thấy row cũ)');
   }
   recordEvent(id, 'enqueued', isScheduled ? `scheduled at ${scheduledAt?.toISOString()}` : 'immediate');
-
-  await addJob({ ...input, id, delay });
   return { id, status };
+}
+
+// dispatcher (chạy trong worker process): đọc outbox pending → push BullMQ → đánh dấu dispatched.
+// BullMQ jobId = notificationId nên push trùng (crash giữa add và mark) cũng không tạo job đôi.
+export async function dispatchPendingOutbox(limit = 100): Promise<number> {
+  const rows = getPendingOutbox(limit);
+  for (const row of rows) {
+    const payload = JSON.parse(row.payload) as EnqueueInput & { delay?: number };
+    const n = getNotification(row.notification_id);
+    // notification đã bị hủy trước kịp dispatch → bỏ qua, không tạo job
+    if (!n || n.notification.status === 'cancelled') {
+      markOutboxDispatched(row.id);
+      continue;
+    }
+    await addJob({ ...payload, id: row.notification_id });
+    markOutboxDispatched(row.id);
+  }
+  return rows.length;
 }
 
 // đẩy lại job đã dead (status failed) — dùng cho POST /notifications/:id/replay

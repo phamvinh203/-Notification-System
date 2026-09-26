@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearTables, createNotification, getNotification } from '../src/db.js';
-import { redisAvailable, waitForStatus } from './helpers.js';
+import { redisAvailable, waitForEvent, waitForStatus } from './helpers.js';
 
 const hasRedis = await redisAvailable();
 
@@ -117,5 +117,28 @@ describe.skipIf(!hasRedis)('worker + retry logic (cần Redis)', () => {
     await seedJob('w-notdead');
     const result = await queueMod.replayNotification('w-notdead');
     expect(result).toBe('not_failed');
+  });
+
+  it('E2E outbox: enqueue (chỉ ghi DB) → dispatch → worker xử lý → sent', async () => {
+    const res = await queueMod.enqueueNotification({ channel: 'email', recipient: 'e2e@outbox.test', body: 'qua outbox' });
+    // chưa dispatch → chưa có job, vẫn queued
+    expect(await queueMod.notificationQueue.getJob(res.id)).toBeFalsy();
+    await queueMod.dispatchPendingOutbox();
+    const st = await waitForStatus(res.id, ['sent']);
+    expect(st).toBe('sent');
+    const events = getNotification(res.id)!.events.map((e) => e.event);
+    expect(events).toEqual(['enqueued', 'processing', 'sent']);
+  });
+
+  it('guard cancelled: notification hủy sau khi job lên queue → worker bỏ qua, không gửi, giữ status cancelled', async () => {
+    createNotification({ id: 'w-cancel', channel: 'email', recipient: 'a@b.c', body: 'x', status: 'cancelled', scheduled_at: null });
+    await queueMod.notificationQueue.add(
+      'send',
+      { notificationId: 'w-cancel', channel: 'email', recipient: 'a@b.c', body: 'x' },
+      { jobId: 'w-cancel', attempts: 1 },
+    );
+    await waitForEvent('w-cancel', 'skipped_cancelled');
+    expect(providerState.sendCalls).toBe(0);
+    expect(getNotification('w-cancel')!.notification.status).toBe('cancelled');
   });
 });

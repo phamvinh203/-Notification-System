@@ -17,19 +17,21 @@ Một hệ thống gửi thông báo (notification) viết cho mục đích **h�
 ```
                           ┌──────────────────────────── 1 process (src/index.ts) ───────────────────────────┐
                           │                                                                                 │
-Client ── HTTP ──▶  Fastify API ── enqueue ──▶  BullMQ Queue (Redis)  ◀── consume ──  Worker (concurrency 5)
-                    (src/api/routes.ts)        (src/queue/queue.ts)                (src/queue/worker.ts)
-                          │                              │                                      │
-                          │                              └── Bull Board UI (/admin/queues)      ▼
-                          ▼                                                            Mock Providers
-                     SQLite DB  ◀────────── ghi trạng thái + delivery events ────────  email / push / sms
-                     (src/db.ts)                                                      (src/providers/)
+Client ── HTTP ──▶  Fastify API ── 1 TRANSACTION: notification + outbox  ──▶            SQLite DB            │
+                    (src/api/routes.ts)                                                     (src/db.ts)
+                          │                                                                     ▲          │
+                          │  Bull Board UI (/admin/queues)                          đọc outbox pending      │
+                          ▼                                                            │          │
+                          └──▶ BullMQ Queue (Redis) ◀── push job ── Dispatcher (poll 500ms) ────┘          │
+                                          ▲                                                                │
+                                          └── consume ── Worker (concurrency 5) ── Mock Providers           │
+                                                                                    email/push/sms/webhook │
+                                             trạng thái + delivery events ────────────────────────────────┘
 
-Gửi ngay: job vào queue chạy liền.
-Hẹn giờ:  client truyền sendAt → job được delay tới đúng thời điểm.
+Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload chứa delay, BullMQ chờ đến hạn.
 ```
 
-Hiện tại **API và Worker đã tách thành 2 entry riêng** (`src/index.ts` và `src/start-worker.ts`): local `npm run dev` chạy cả hai bằng `concurrently`, còn Docker compose chạy 3 container độc lập (`redis` + `api` + `worker`) — scale worker không ảnh hưởng API.
+**API và Worker tách thành 2 entry riêng** (`src/index.ts` và `src/start-worker.ts`): local `npm run dev` chạy cả hai bằng `concurrently`, còn Docker compose chạy 3 container độc lập (`redis` + `api` + `worker`). API nhận request **không cần đụng Redis** — chỉ ghi SQLite; worker process vừa chạy outbox dispatcher vừa consume job.
 
 ---
 
@@ -46,21 +48,19 @@ Hiện tại **API và Worker đã tách thành 2 entry riêng** (`src/index.ts`
 | `DELETE` | `/notifications/:id` | Hủy notification | Chỉ hủy được khi đang `scheduled`, ngược lại trả `409` |
 | `POST` | `/notifications/:id/replay` | Đẩy lại job dead | Chỉ khi status `failed`; ngược lại `409` |
 | `GET` | `/templates` | Danh sách template | Tên các template `.hbs` khả dụng |
+| `GET` | `/metrics` | Prometheus metrics | Format `text/plain`; cùng chính sách auth như `/notifications*` |
 | `GET` | `/admin/queues` | Bull Board UI | Xem queue/retry/delayed job trực quan trên trình duyệt |
 
 - Body đầu vào được **validate bằng Zod** (`src/api/routes.ts`): `channel` chỉ nhận `email | push | sms`, sai format trả `400` kèm chi tiết lỗi. Query params phân trang cũng validate bằng Zod (`limit=0` → 400).
 - `id` là UUID do hệ thống tự sinh.
 - Có trường `sendAt` (ISO datetime) → thông báo chuyển thành **hẹn giờ**: job được delay đến đúng mốc thời gian đó, trạng thái ban đầu là `scheduled` (nếu `sendAt` ở quá khứ thì coi như gửi ngay, nhưng vẫn lưu lại mốc client yêu cầu).
 
-### 3.2 Hàng đợi BullMQ + Redis (`src/queue/queue.ts`)
+### 3.2 Hàng đợi BullMQ + Redis + Outbox pattern (`src/queue/queue.ts`)
 
 - Queue tên `notifications`, connection ioredis pin v5 khớp với BullMQ.
-- **Gửi ngay hoặc hẹn giờ**: `sendAt` trong tương lai → `delay` = hiệu thời gian; quá khứ → coi như gửi ngay.
-- Cấu hình job mỗi lần đẩy vào queue:
-  - `jobId` = id của notification (tiện tra cứu, hủy).
-  - `attempts: 3`, backoff exponential 1s → 2s → 4s.
-  - `removeOnComplete` / `removeOnFail`: giữ tối đa 1000 job gần nhất mỗi loại.
-- **Nguyên tắc "ghi DB trước, đẩy queue sau"**: một notification luôn có row trong SQLite trước khi job được add — nếu process chết giữa chừng, dữ liệu vẫn còn.
+- **Gửi ngay hoặc hẹn giờ**: `sendAt` trong tương lai → `delay` = hiệu thời gian; quá khứ → coi như gửi ngay (vẫn lưu mốc client yêu cầu).
+- Cấu hình job: `jobId` = id notification, `attempts: 3`, backoff exponential 1s → 2s → 4s, giữ tối đa 1000 job complete/fail mỗi loại.
+- **Outbox pattern** (mục 3.9): API KHÔNG add job lúc nhận request — chỉ ghi notification + outbox intent trong 1 transaction. Job được dispatcher trong worker process đẩy lên BullMQ sau đó (poll 500ms).
 
 ### 3.3 Worker xử lý job (`src/queue/worker.ts`)
 
@@ -106,12 +106,27 @@ Hiện tại **API và Worker đã tách thành 2 entry riêng** (`src/index.ts`
 
 ### 3.8 Nền tảng chất lượng
 
-- **Auth API key**: set biến `API_KEY` → mọi endpoint `/notifications*` và Bull Board `/admin/queues` yêu cầu header `x-api-key`, sai/thiếu trả `401`. `/health` luôn mở. Không set biến → tắt auth (dev local). Hiện thực qua preHandler hook trong `src/app.ts`.
+- **Auth API key**: set biến `API_KEY` → mọi endpoint `/notifications*`, Bull Board `/admin/queues` và `/metrics` yêu cầu header `x-api-key`, sai/thiếu trả `401`. `/health` luôn mở. Không set biến → tắt auth (dev local). Hiện thực qua preHandler hook trong `src/app.ts`.
 - **Phân trang** cho danh sách: `{items, total, limit, offset}` thay vì trả toàn bộ mảng.
-- **30 test tự động** (vitest): db layer (unit), REST API + auth + phân trang (integration qua Fastify `inject`), queue scheduling, worker + retry logic (integration với Redis thật, mock provider deterministic để assert đúng số lần retry). Test cần Redis **tự skip** khi Redis không chạy — local không bật Docker vẫn chạy được bộ unit.
-- **Docker hóa**: `Dockerfile` (node:22-alpine, chạy TS trực tiếp bằng tsx) + `docker-compose.yml` với 3 service `redis` / `api` / `worker`, có healthcheck, SQLite persist qua volume `./data`.
+- **53 test tự động** (vitest): db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration qua Fastify `inject`), queue scheduling + priority, outbox pattern, worker + retry + replay + cancelled-guard. Test cần Redis **tự skip** khi Redis không chạy — local không bật Docker vẫn chạy được bộ unit.
+- **Docker hóa**: `Dockerfile` (node:22-alpine, chạy TS trực tiếp bằng tsx) + `docker-compose.yml` với 3 service `redis` / `api` / `worker`, có healthcheck (`127.0.0.1` tường minh — `localhost` trong container resolve sang `::1` sẽ refused vì Node listen IPv4), SQLite persist qua volume `./data`.
 - **CI**: GitHub Actions chạy `typecheck` + `test` trên mỗi push/PR, cấp service Redis 7.
-- **Tách entry API / Worker**: `src/index.ts` (API) và `src/start-worker.ts` (worker, có graceful shutdown SIGINT/SIGTERM) — chạy chung bằng `npm run dev` hoặc tách riêng `npm run dev:api` / `npm run dev:worker`.
+- **Tách entry API / Worker**: `src/index.ts` (API) và `src/start-worker.ts` (worker + outbox dispatcher, graceful shutdown SIGINT/SIGTERM).
+
+### 3.9 Kiến trúc nâng cao: Outbox pattern + Observability
+
+**Outbox pattern** — giải quyết *dual-write problem* của kiến trúc cũ: API ghi SQLite xong mà process chết trước khi đẩy job lên Redis → notification kẹt `queued` mãi, không ai đẩy lại. Cách hiện thực:
+
+1. `POST /notifications` ghi **notification + outbox intent trong CÙNG transaction** SQLite (`BEGIN IMMEDIATE` ... `COMMIT`, hàm `createNotificationWithOutbox`). Commit thành công = intent chắc chắn còn đó.
+2. **Outbox dispatcher** (chạy trong worker process, poll 500ms): đọc outbox `pending` → push job lên BullMQ → đánh dấu `dispatched`. Push trùng (crash giữa add và mark) không tạo job đôi vì BullMQ `jobId` = notificationId là idempotent.
+3. **Cancel an toàn 2 chiều**: notification bị hủy trước kịp dispatch → dispatcher bỏ qua, không tạo job; bị hủy sau khi job đã lên queue → worker có guard `cancelled` (không gọi provider, event `skipped_cancelled`, completed handler không đè status về `sent`).
+4. Đánh đổi: scheduled job trễ thêm ~500ms (khoảng poll) — chấp nhận được, ghi rõ trong docs.
+
+**Observability**:
+
+- `GET /metrics` (prom-client, format Prometheus): gauges `notifications_by_status`, `notifications_by_channel`, `outbox_pending`, `bullmq_jobs{state}` + default process metrics. Gauges tính **trực tiếp từ SQLite + Redis lúc scrape** — realtime và đúng cho dù api/worker là 2 process riêng (không cần counter in-memory).
+- Timeline `delivery_events` trong DB + Bull Board UI + JSON logger của Fastify.
+- Docker healthcheck `/health` cho container api.
 
 ---
 
@@ -138,6 +153,7 @@ src/
 ├── config.ts             # Đọc biến môi trường
 ├── db.ts                 # SQLite: schema + migration nhẹ, CRUD + phân trang + delivery events
 ├── templates.ts          # Registry Handlebars: nạp templates/*.hbs, render theo tên
+├── metrics.ts            # Prometheus registry + gauges (tính từ SQLite + Redis lúc scrape)
 ├── demo.ts               # Script demo end-to-end
 ├── api/
 │   └── routes.ts         # REST endpoints + Zod validation + idempotency + rate limit + replay
@@ -164,14 +180,14 @@ docker-compose.yml        # 3 service: redis / api / worker
 Đây là những điểm **cố ý chưa làm** — là hướng phát triển tiếp theo của dự án:
 
 1. **Provider email/push/sms vẫn là mock** — chỉ webhook là thật; cắm Resend/Twilio/FCM cần tài khoản dịch vụ.
-2. **SQLite thay cho DB production** — phù hợp demo, chưa phù hợp nhiều instance ghi đồng thời.
-3. **Outbox pattern** — ghi DB và đẩy queue vẫn là 2 bước riêng, chưa atomic (trường hợp hiếm: ghi DB xong, process chết trước khi add job → notification kẹt queued mãi).
-4. **Quản lý template qua API/DB** — template hiện là file `.hbs` cố định, sửa là phải deploy lại.
-5. **Rate limit mới đếm lúc tạo** — chưa throttle ở worker (xả job đều tay).
-6. **Chưa có OpenAPI docs** tự sinh từ zod schema.
-7. **Auth mới ở mức API key tĩnh** — chưa có multi-tenant, hết hạn, thu hồi key.
+2. **SQLite thay cho DB production** — phù hợp demo, chưa phù hợp nhiều instance ghi đồng thời (lên Postgres + Drizzle là bước tiếp).
+3. **Quản lý template qua API/DB** — template hiện là file `.hbs` cố định, sửa là phải deploy lại.
+4. **Rate limit mới đếm lúc tạo** — chưa throttle ở worker (xả job đều tay).
+5. **Chưa có OpenAPI docs** tự sinh từ zod schema.
+6. **Auth mới ở mức API key tĩnh** — chưa có multi-tenant, hết hạn, thu hồi key.
+7. **Metrics mới là gauges trạng thái** — chưa có histogram latency, chưa gắn Prometheus/Grafana service vào compose.
 
-> Đã hoàn thành: nền tảng chất lượng (test, Docker, CI, phân trang, auth, tách process) — 2026-09-26; tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) — 2026-09-26.
+> Đã hoàn thành: nền tảng chất lượng (test, Docker, CI, phân trang, auth, tách process) — 2026-09-26; tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) — 2026-09-26; kiến trúc nâng cao (outbox pattern, Prometheus metrics) — 2026-09-26.
 
 ---
 
@@ -187,4 +203,5 @@ docker-compose.yml        # 3 service: redis / api / worker
 | `6b2f7a2` | REST API + Bull Board UI + bootstrap |
 | `c13dd29` | Demo script end-to-end + README |
 | `66840a7` | Fix: khai báo ioredis trực tiếp (pin v5 khớp BullMQ) + chặn race DELETE-vs-worker (500 → 409) |
-| *(chưa commit)* | Nền tảng chất lượng: tách buildApp + entry API/worker, /health, phân trang, auth API key, 30 test vitest, Dockerfile + compose 3 service, CI GitHub Actions |
+| `58588b6`…`6f2ff7f` | Nền tảng chất lượng (buildApp, tách entry, /health, phân trang, auth, 30 test, Docker, CI) + tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) |
+| *(chưa commit)* | Kiến trúc nâng cao: **outbox pattern** (transaction DB+outbox, dispatcher, guard cancelled) + **Prometheus /metrics** + fix healthcheck IPv6 |

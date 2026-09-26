@@ -115,6 +115,21 @@ describe.skipIf(!hasRedis)('API integration (cần Redis)', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  describe('metrics', () => {
+    it('GET /metrics có key → 200 Prometheus text, chứa gauge của hệ thống', async () => {
+      const res = await app.inject({ method: 'GET', url: '/metrics', headers: { 'x-api-key': KEY } });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toContain('text/plain');
+      expect(res.body).toContain('notifications_by_status');
+      expect(res.body).toContain('bullmq_jobs');
+    });
+
+    it('GET /metrics thiếu key → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/metrics' });
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
   describe('auth API key', () => {
     it('thiếu key → 401', async () => {
       const res = await post({ channel: 'email', recipient: 'a@b.c', body: 'x' }, null);

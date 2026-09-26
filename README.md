@@ -72,6 +72,7 @@ curl -H "x-api-key: dev-secret-123" http://localhost:3000/notifications
 | DELETE | `/notifications/:id` | Hủy job scheduled (409 nếu không phải scheduled) |
 | POST | `/notifications/:id/replay` | Đẩy lại job đã **dead** (chỉ khi status `failed`) — chạy lại với cấu hình retry như mới |
 | GET | `/templates` | Danh sách template khả dụng |
+| GET | `/metrics` | **Prometheus metrics** — status/channel/outbox/queue gauges (format text/plain) |
 | GET | `/admin/queues` | Bull Board UI — xem queue/retry/delayed trực quan |
 
 ## Tính năng
@@ -114,7 +115,7 @@ npm test          # chạy 1 lần
 npm run test:watch
 ```
 
-- **44 test**: db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit (integration), queue scheduling + priority, worker + retry + replay (integration).
+- **53 test**: db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration), queue scheduling + priority, **outbox pattern**, worker + retry + replay + cancelled-guard (integration).
 - Test cần Redis sẽ **tự skip** nếu Redis không chạy — local không bật Docker vẫn được bộ unit test; **CI luôn chạy đủ** (GitHub Actions cấp service Redis).
 - Chạy từng process riêng khi debug: `npm run dev:api` / `npm run dev:worker`.
 
@@ -125,18 +126,24 @@ GitHub Actions (`.github/workflows/ci.yml`): mỗi push/PR chạy `npm run typec
 ## Luồng
 
 ```
-POST /notifications → DB row (queued/scheduled) + job lên BullMQ
-Worker: processing → provider mock (300-800ms, fail theo FAIL_RATE)
-  thành công → sent
-  fail      → BullMQ retry (3 lần, backoff 1s/2s/4s) → hết → failed (dead)
+POST /notifications → 1 TRANSACTION SQLite: row notification + row outbox (intent)
+  (API không đụng Redis lúc nhận request — không còn dual-write problem)
+Worker process:
+  Outbox dispatcher (poll 500ms) → đọc outbox pending → push job lên BullMQ → đánh dấu dispatched
+  Worker: processing → provider (mock 300-800ms fail theo FAIL_RATE, webhook là fetch thật)
+    thành công → sent
+    fail      → BullMQ retry (3 lần, backoff 1s/2s/4s) → hết → failed (dead)
 GET /notifications/:id → timeline: enqueued → processing → (retry_scheduled)* → sent | dead
 ```
+
+- Hủy scheduled an toàn với outbox: notification bị hủy trước kịp dispatch → dispatcher bỏ qua; bị hủy sau khi job lên queue → worker guard `cancelled`, không gọi provider và không đè status.
+- Metrics xem realtime: `curl -H "x-api-key: ..." localhost:3000/metrics | grep notification`.
 
 ## Kiến trúc process
 
 ```
-src/index.ts        → API (Fastify + Bull Board)
-src/start-worker.ts → Worker (concurrency 5)
+src/index.ts        → API (Fastify + Bull Board + /metrics)
+src/start-worker.ts → Worker (concurrency 5) + Outbox dispatcher (poll 500ms)
 ```
 
 Hai entry tách riêng nên API và worker scale độc lập — local `npm run dev` vẫn chạy cả hai bằng `concurrently`, Docker compose chạy 3 container: `redis` + `api` + `worker`.

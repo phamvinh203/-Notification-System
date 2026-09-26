@@ -4,7 +4,7 @@ import { redisAvailable } from './helpers.js';
 
 const hasRedis = await redisAvailable();
 
-describe.skipIf(!hasRedis)('queue: enqueueNotification (cần Redis)', () => {
+describe.skipIf(!hasRedis)('queue: enqueueNotification + dispatch (cần Redis)', () => {
   type QueueMod = typeof import('../src/queue/queue.js');
   let queueMod: QueueMod;
 
@@ -19,9 +19,10 @@ describe.skipIf(!hasRedis)('queue: enqueueNotification (cần Redis)', () => {
     await queueMod.connection.quit();
   });
 
-  it('gửi ngay → status queued, job không delay', async () => {
+  it('gửi ngay → status queued, sau dispatch job không delay', async () => {
     const res = await queueMod.enqueueNotification({ channel: 'email', recipient: 'a@b.c', body: 'x' });
     expect(res.status).toBe('queued');
+    await queueMod.dispatchPendingOutbox();
     const job = await queueMod.notificationQueue.getJob(res.id);
     expect(job).toBeTruthy();
     expect(job!.delay).toBe(0);
@@ -31,10 +32,11 @@ describe.skipIf(!hasRedis)('queue: enqueueNotification (cần Redis)', () => {
     expect(row.events[0]!.event).toBe('enqueued');
   });
 
-  it('sendAt tương lai → scheduled, delay đúng khoảng, scheduled_at ghi DB', async () => {
+  it('sendAt tương lai → scheduled, sau dispatch delay đúng khoảng, scheduled_at ghi DB', async () => {
     const sendAt = new Date(Date.now() + 5_000).toISOString();
     const res = await queueMod.enqueueNotification({ channel: 'sms', recipient: '+8490', body: 'x', sendAt });
     expect(res.status).toBe('scheduled');
+    await queueMod.dispatchPendingOutbox();
     const job = await queueMod.notificationQueue.getJob(res.id);
     expect(job).toBeTruthy();
     expect(job!.delay).toBeGreaterThan(4_000);
@@ -57,6 +59,7 @@ describe.skipIf(!hasRedis)('queue: enqueueNotification (cần Redis)', () => {
 
   it('job mặc định: retry 3 lần, backoff exponential 1s, jobId = id notification', async () => {
     const res = await queueMod.enqueueNotification({ channel: 'email', recipient: 'a@b.c', body: 'x' });
+    await queueMod.dispatchPendingOutbox();
     const job = await queueMod.notificationQueue.getJob(res.id);
     expect(job!.opts.attempts).toBe(3);
     expect(job!.opts.backoff).toEqual({ type: 'exponential', delay: 1000 });
@@ -68,6 +71,7 @@ describe.skipIf(!hasRedis)('queue: enqueueNotification (cần Redis)', () => {
     const high = await queueMod.enqueueNotification({ channel: 'email', recipient: 'a@b.c', body: 'x', priority: 'high' });
     const low = await queueMod.enqueueNotification({ channel: 'email', recipient: 'a@b.c', body: 'x', priority: 'low' });
     const none = await queueMod.enqueueNotification({ channel: 'email', recipient: 'a@b.c', body: 'x' });
+    await queueMod.dispatchPendingOutbox();
     expect((await queueMod.notificationQueue.getJob(high.id))!.opts.priority).toBe(1);
     expect((await queueMod.notificationQueue.getJob(low.id))!.opts.priority).toBe(9);
     expect((await queueMod.notificationQueue.getJob(none.id))!.opts.priority).toBeUndefined();

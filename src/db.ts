@@ -54,6 +54,19 @@ if (!cols.some((c) => c.name === 'idempotency_key')) {
 }
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency_key ON notifications(idempotency_key) WHERE idempotency_key IS NOT NULL;');
 
+// outbox pattern: intent đẩy job ghi CÙNG transaction với notification
+db.exec(`
+  CREATE TABLE IF NOT EXISTS outbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    notification_id TEXT NOT NULL REFERENCES notifications(id),
+    payload         TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    created_at      TEXT NOT NULL,
+    dispatched_at   TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status);
+`);
+
 export function createNotification(n: {
   id: string; channel: Channel; recipient: string; subject?: string;
   body: string; status: Status; scheduled_at: string | null; idempotency_key?: string | null;
@@ -105,8 +118,53 @@ export function countNotifications(filter: { status?: string; channel?: string }
   return row.total;
 }
 
+export function countByStatus(): Record<string, number> {
+  const rows = db.prepare('SELECT status, COUNT(*) AS total FROM notifications GROUP BY status').all() as unknown as Array<{ status: string; total: number }>;
+  return Object.fromEntries(rows.map((r) => [r.status, r.total]));
+}
+
+export function countByChannel(): Record<string, number> {
+  const rows = db.prepare('SELECT channel, COUNT(*) AS total FROM notifications GROUP BY channel').all() as unknown as Array<{ channel: string; total: number }>;
+  return Object.fromEntries(rows.map((r) => [r.channel, r.total]));
+}
+
 export function findByIdempotencyKey(key: string): NotificationRow | undefined {
   return db.prepare('SELECT * FROM notifications WHERE idempotency_key = ?').get(key) as NotificationRow | undefined;
+}
+
+// atomic dual-write: notification + outbox intent trong CÙNG transaction.
+// DB commit thành công = intent đẩy job chắc chắn còn đó, dispatcher sẽ nhặt được.
+export function createNotificationWithOutbox(n: {
+  id: string; channel: Channel; recipient: string; subject?: string;
+  body: string; status: Status; scheduled_at: string | null; idempotency_key?: string | null;
+}, payload: string): void {
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    createNotification(n);
+    db.prepare(
+      'INSERT INTO outbox (notification_id, payload, status, created_at) VALUES (?, ?, ?, ?)'
+    ).run(n.id, payload, 'pending', new Date().toISOString());
+    db.exec('COMMIT;');
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
+}
+
+export function getPendingOutbox(limit = 100): Array<{ id: number; notification_id: string; payload: string }> {
+  return db.prepare(
+    `SELECT id, notification_id, payload FROM outbox WHERE status = 'pending' ORDER BY id LIMIT ?`
+  ).all(limit) as unknown as Array<{ id: number; notification_id: string; payload: string }>;
+}
+
+export function markOutboxDispatched(id: number): void {
+  db.prepare(`UPDATE outbox SET status = 'dispatched', dispatched_at = ? WHERE id = ?`)
+    .run(new Date().toISOString(), id);
+}
+
+export function countOutbox(status: 'pending' | 'dispatched'): number {
+  const row = db.prepare('SELECT COUNT(*) AS total FROM outbox WHERE status = ?').get(status) as { total: number };
+  return row.total;
 }
 
 // đếm notification của 1 recipient trong khoảng thời gian (dùng cho rate limit)
@@ -119,5 +177,5 @@ export function countRecentByRecipient(recipient: string, sinceIso: string): num
 
 // helper cho test — xoá sạch dữ liệu giữa các test case
 export function clearTables(): void {
-  db.exec('DELETE FROM delivery_events; DELETE FROM notifications;');
+  db.exec('DELETE FROM delivery_events; DELETE FROM outbox; DELETE FROM notifications;');
 }

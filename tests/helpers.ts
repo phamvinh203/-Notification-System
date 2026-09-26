@@ -21,6 +21,19 @@ export async function redisAvailable(): Promise<boolean> {
   }
 }
 
+/** Poll DB tới khi notification có 1 delivery event cụ thể, hoặc timeout */
+export async function waitForEvent(id: string, event: string, timeoutMs = 15_000): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    const row = getNotification(id);
+    if (row?.events.some((e) => e.event === event)) return;
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`timeout ${timeoutMs}ms chờ event "${event}" của ${id} — events hiện: [${row?.events.map((e) => e.event).join(', ') ?? 'không có'}]`);
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 /** Poll DB tới khi notification vào 1 trong các trạng thái mong đợi, hoặc timeout */
 export async function waitForStatus(id: string, want: string[], timeoutMs = 15_000): Promise<string> {
   const start = Date.now();
