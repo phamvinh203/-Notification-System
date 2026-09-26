@@ -39,6 +39,28 @@ services:
       REDIS_URL: redis://redis:6379
       DB_PATH: /app/data/notifications.db
       FAIL_RATE: "0.3"
+      # ===== EMAIL THẬT =====
+      # SMTP thật zero-config (xem thư online qua link trong timeline, KHÔNG vào inbox cá nhân):
+      # EMAIL_MODE: smtp
+      # SMTP_PRESET: ethereal
+      # SMTP vào inbox thật (VD Gmail: SMTP_HOST=smtp.gmail.com, SMTP_SECURE=true, SMTP_PORT=465,
+      #   SMTP_USER=<email>, SMTP_PASS=<app-password 16 ký tự>):
+      # EMAIL_MODE: smtp
+      # SMTP_HOST: smtp.gmail.com
+      # SMTP_SECURE: "true"
+      # SMTP_PORT: "465"
+      # SMTP_USER: you@gmail.com
+      # SMTP_PASS: xxxx xxxx xxxx xxxx
+      # EMAIL_FROM: "Notification <you@gmail.com>"
+      # Hoặc Resend (inbox thật, cần API key miễn phí tại resend.com):
+      # EMAIL_MODE: resend
+      # RESEND_API_KEY: re_xxxxxxxx
+      # RESEND_FROM: "Notification <onboarding@resend.dev>"
+      # ===== SMS THẬT (Twilio trial — chỉ gửi tới số đã verify) =====
+      # SMS_MODE: twilio
+      # TWILIO_ACCOUNT_SID: ACxxxxxxxx
+      # TWILIO_AUTH_TOKEN: xxxxxxxx
+      # TWILIO_FROM: "+1xxxxxxxxxx"
     volumes:
       - ./data:/app/data
     depends_on:

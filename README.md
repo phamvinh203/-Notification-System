@@ -82,6 +82,51 @@ npm run dev        # http://localhost:5173 — proxy /api về :3000
 
 4 trang: **Tổng quan** (metrics realtime 3s, có pause), **Thông báo** (bảng lọc/phân trang, hủy/replay), **Chi tiết** (timeline delivery events tự live khi job đang chạy), **Tạo mới** (chọn kênh, template + params, preview payload, idempotency key). API key cho thao tác ghi nhập ở thanh trên cùng (lưu localStorage).
 
+## Gửi thật (email & SMS)
+
+Provider mặc định là **mock** (random fail theo `FAIL_RATE` để demo retry). Đổi env của **worker** để gửi thật:
+
+### Email — 3 chế độ (`EMAIL_MODE`)
+
+| Chế độ | Cần gì | Kết quả |
+|---|---|---|
+| `mock` (default) | — | giả lập, không gửi đi đâu |
+| `smtp` + `SMTP_PRESET=ethereal` | không cần gì | **SMTP thật zero-config** — email xem được online qua link trong timeline (`sent` event), không vào inbox cá nhân |
+| `smtp` + SMTP host riêng | SMTP credentials | email vào **hộp thư thật** (Gmail: `smtp.gmail.com`, port 465, secure, app password 16 ký tự) |
+| `resend` | `RESEND_API_KEY` (miễn phí tại resend.com) | email vào hộp thư thật qua HTTP API |
+
+```yaml
+# docker-compose.yml (service worker) — ví dụ Ethereal:
+environment:
+  EMAIL_MODE: smtp
+  SMTP_PRESET: ethereal
+# ví dụ Gmail app password (inbox thật):
+#   EMAIL_MODE: smtp
+#   SMTP_HOST: smtp.gmail.com
+#   SMTP_SECURE: "true"
+#   SMTP_PORT: "465"
+#   SMTP_USER: you@gmail.com
+#   SMTP_PASS: xxxx xxxx xxxx xxxx
+#   EMAIL_FROM: "Notification <you@gmail.com>"
+```
+
+### SMS — Twilio (`SMS_MODE=twilio`)
+
+Cần `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` + `TWILIO_FROM`. Twilio **trial** chỉ gửi được tới số đã verify. Gửi qua REST API, Basic auth.
+
+> Sau khi gửi thật, thông tin xác thực (link xem thư Ethereal, message id Resend, sid Twilio) được ghi vào **event `sent` trong timeline** — xem ngay trên dashboard.
+
+**Push (FCM)**: cần Firebase project + service account — chưa làm, provider vẫn là mock.
+
+## Gửi thật (demo nhanh không cần đăng ký)
+
+```bash
+docker compose stop worker
+docker compose run --rm -e EMAIL_MODE=smtp -e SMTP_PRESET=ethereal -e FAIL_RATE=0 worker npx tsx src/start-worker.ts
+# terminal khác: POST /notifications (channel email) → timeline event sent chứa link xem thư
+docker compose start worker   # trả lại worker mock
+```
+
 ## Monitoring (Prometheus + Grafana)
 
 `docker compose up` kèm sẵn:

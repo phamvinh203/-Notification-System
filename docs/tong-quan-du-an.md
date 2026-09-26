@@ -69,12 +69,18 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 - **Retry tự động khi provider fail**: BullMQ tự retry tối đa 3 lần với backoff 1s/2s/4s. Hết lượt → DB chuyển `failed`.
 - Worker lắng nghe event `completed` / `failed` để cập nhật trạng thái và **ghi delivery event** sau mỗi bước (thấy rõ từng lần retry trong timeline).
 
-### 3.4 Providers cho 4 kênh (`src/providers/`)
+### 3.4 Providers — mock + thật (`src/providers/`)
 
-- Bốn provider `email`, `push`, `sms`, `webhook` cùng implements một interface `NotificationProvider` duy nhất (`send()`).
-- **Mock** (email/push/sms): trễ ngẫu nhiên **300–800ms**, fail ngẫu nhiên theo xác suất **`FAIL_RATE`** (mặc định `0.3`).
-- **Webhook (thật)**: `recipient` là URL http(s) — provider POST JSON `{subject, body}` tới đó (timeout 5s), đọc status trả về để quyết định thành công/thất bại. Đây là adapter "thật" đầu tiên của hệ thống.
-- Muốn thay provider thật (Nodemailer/Resend/Twilio/FCM...) chỉ cần đổi body của `send()` — kiến trúc đã tách sẵn.
+- Bốn kênh `email`, `push`, `sms`, `webhook` cùng implements interface `NotificationProvider` (`send()` trả `SendResult | void` — info được worker ghi vào event `sent`).
+- **Mock** (email/push/sms khi không cấu hình): trễ ngẫu nhiên **300–800ms**, fail ngẫu nhiên theo **`FAIL_RATE`** (mặc định `0.3`) — để demo retry.
+- **Webhook (thật)**: `recipient` là URL http(s) — POST JSON `{subject, body}` (timeout 5s).
+- **Email thật** (`EMAIL_MODE`):
+  - `smtp` + `SMTP_PRESET=ethereal` — **SMTP thật zero-config** qua [Ethereal](https://ethereal.email): tự tạo tài khoản test, email gửi qua SMTP thật và xem được online qua **link preview ghi vào timeline event `sent`** (không delivery vào inbox cá nhân).
+  - `smtp` + `SMTP_HOST/PORT/SECURE/USER/PASS` (Nodemailer) — vào **hộp thư thật** (Gmail app password, Mailtrap...).
+  - `resend` + `RESEND_API_KEY/RESEND_FROM` — HTTP API Resend, inbox thật.
+- **SMS thật** (`SMS_MODE=twilio`): REST API Twilio + Basic auth (`TWILIO_ACCOUNT_SID/AUTH_TOKEN/FROM`); trial chỉ gửi tới số đã verify.
+- **Push**: vẫn mock — FCM cần Firebase project (bước sau).
+- Thêm provider mới: implement `send()` rồi đăng ký trong `index.ts` — kiến trúc đã tách sẵn.
 
 ### 3.4b Tính năng notification "thật" hơn
 
@@ -224,4 +230,5 @@ docker-compose.yml        # 3 service: redis / api / worker
 | `58588b6`…`6f2ff7f` | Nền tảng chất lượng (buildApp, tách entry, /health, phân trang, auth, 30 test, Docker, CI) + tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) |
 | `cbed309` | Kiến trúc nâng cao: outbox pattern (transaction DB+outbox, dispatcher, guard cancelled) + Prometheus /metrics + fix healthcheck IPv6 |
 | `9065480` | Dashboard frontend: 4 trang (Tổng quan/Danh sách/Chi tiết/Tạo mới) + đổi chính sách auth reads-open + GUI test bằng browser |
-| *(chưa commit)* | Ship v1.0: Fastify serve dashboard (SPA fallback Accept header), Dockerfile multi-stage build UI, Prometheus + Grafana vào compose, auth nhận thêm Bearer |
+| `d072be1` | Ship v1.0: Fastify serve dashboard (SPA fallback Accept header), Dockerfile multi-stage build UI, Prometheus + Grafana vào compose, auth nhận thêm Bearer |
+| *(chưa commit)* | Provider thật: email qua SMTP thật (preset Ethereal zero-config + host riêng qua Nodemailer) / Resend API, SMS qua Twilio REST API; send() trả info ghi vào event sent |
