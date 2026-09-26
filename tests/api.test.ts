@@ -1,0 +1,145 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import { clearTables, createNotification, getNotification } from '../src/db.js';
+import { redisAvailable } from './helpers.js';
+
+const hasRedis = await redisAvailable();
+
+// import động trong beforeAll — khi Redis không có thì skip mà không để connection treo
+type QueueMod = typeof import('../src/queue/queue.js');
+type AppMod = typeof import('../src/app.js');
+
+describe.skipIf(!hasRedis)('API integration (cần Redis)', () => {
+  const KEY = 'test-secret';
+  let app: FastifyInstance;
+  let queueMod: QueueMod;
+
+  beforeAll(async () => {
+    queueMod = await import('../src/queue/queue.js');
+    const appMod: AppMod = await import('../src/app.js');
+    app = await appMod.buildApp({ apiKey: KEY, logger: false });
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await queueMod.notificationQueue.obliterate({ force: true }).catch(() => {});
+  });
+
+  beforeEach(() => clearTables());
+
+  const post = (payload: Record<string, unknown>, key: string | null = KEY) =>
+    app.inject({
+      method: 'POST',
+      url: '/notifications',
+      headers: { 'content-type': 'application/json', ...(key ? { 'x-api-key': key } : {}) },
+      payload,
+    });
+  const get = (url: string, key: string | null = KEY) =>
+    app.inject({ method: 'GET', url, headers: key ? { 'x-api-key': key } : {} });
+  const del = (url: string, key: string | null = KEY) =>
+    app.inject({ method: 'DELETE', url, headers: key ? { 'x-api-key': key } : {} });
+
+  it('POST body thiếu trường → 400', async () => {
+    const res = await post({ channel: 'email' });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('POST channel lạ → 400', async () => {
+    const res = await post({ channel: 'fax', recipient: 'a@b.c', body: 'hi' });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('POST hợp lệ → 202 queued, row có trong DB, có event enqueued', async () => {
+    const res = await post({ channel: 'email', recipient: 'a@b.c', subject: 'S', body: 'hello' });
+    expect(res.statusCode).toBe(202);
+    const { id, status } = res.json() as { id: string; status: string };
+    expect(status).toBe('queued');
+    const row = getNotification(id);
+    expect(row).toBeDefined();
+    expect(row!.events[0]!.event).toBe('enqueued');
+  });
+
+  it('POST có sendAt tương lai → 202 scheduled', async () => {
+    const res = await post({
+      channel: 'sms',
+      recipient: '+84901234567',
+      body: 'x',
+      sendAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(res.statusCode).toBe(202);
+    expect((res.json() as { status: string }).status).toBe('scheduled');
+  });
+
+  it('GET /notifications trả envelope phân trang {items,total,limit,offset}', async () => {
+    for (let i = 0; i < 5; i++) {
+      createNotification({ id: `seed-${i}`, channel: 'email', recipient: 'r', body: 'b', status: 'queued', scheduled_at: null });
+    }
+    const res = await get('/notifications?limit=2&offset=1');
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { items: unknown[]; total: number; limit: number; offset: number };
+    expect(body.total).toBe(5);
+    expect(body.items).toHaveLength(2);
+    expect(body.limit).toBe(2);
+    expect(body.offset).toBe(1);
+  });
+
+  it('GET /notifications limit=0 → 400 (limit phải 1..100)', async () => {
+    const res = await get('/notifications?limit=0');
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('GET /notifications/:id lạ → 404', async () => {
+    const res = await get('/notifications/nope');
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('DELETE scheduled → cancelled và job bị remove khỏi queue', async () => {
+    const created = (await (
+      await post({ channel: 'email', recipient: 'a@b.c', body: 'x', sendAt: new Date(Date.now() + 60_000).toISOString() })
+    ).json()) as { id: string };
+    const delRes = await del(`/notifications/${created.id}`);
+    expect(delRes.statusCode).toBe(200);
+    expect((delRes.json() as { status: string }).status).toBe('cancelled');
+    expect(getNotification(created.id)!.notification.status).toBe('cancelled');
+    expect(await queueMod.notificationQueue.getJob(created.id)).toBeFalsy();
+  });
+
+  it('DELETE notification đã gửi → 409', async () => {
+    createNotification({ id: 'sent-1', channel: 'email', recipient: 'r', body: 'b', status: 'sent', scheduled_at: null });
+    const res = await del('/notifications/sent-1');
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('DELETE id lạ → 404', async () => {
+    const res = await del('/notifications/nope');
+    expect(res.statusCode).toBe(404);
+  });
+
+  describe('auth API key', () => {
+    it('thiếu key → 401', async () => {
+      const res = await post({ channel: 'email', recipient: 'a@b.c', body: 'x' }, null);
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('sai key → 401', async () => {
+      const res = await post({ channel: 'email', recipient: 'a@b.c', body: 'x' }, 'wrong-key');
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('GET danh sách thiếu key → 401', async () => {
+      const res = await get('/notifications', null);
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('/health luôn mở, không cần key', async () => {
+      const res = await app.inject({ method: 'GET', url: '/health' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true });
+    });
+
+    it('Bull Board /admin/queues cũng bị chặn khi thiếu key', async () => {
+      const res = await app.inject({ method: 'GET', url: '/admin/queues' });
+      expect(res.statusCode).toBe(401);
+    });
+  });
+});
