@@ -69,8 +69,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       const accept = req.headers.accept ?? '';
       if (!accept.includes('text/html')) return;
       const path = (req.url ?? '').split('?')[0];
-      // Bull Board và /metrics phục vụ UI/text riêng, không nhảy vào SPA
-      if (path === '/health' || path === '/metrics' || path.startsWith('/admin/queues')) return;
+      // Bull Board, /metrics và /unsubscribe (trang xác nhận server-render) phục vụ riêng, không nhảy vào SPA
+      if (path === '/health' || path === '/metrics' || path === '/unsubscribe' || path.startsWith('/admin/queues')) return;
       return reply.type('text/html; charset=utf-8').send(indexHtml);
     });
   }

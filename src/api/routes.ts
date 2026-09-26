@@ -9,10 +9,11 @@ import {
   countNotifications, countRecentByRecipient, findByIdempotencyKey, getNotification, listNotifications,
   recordEvent, setStatus,
   listTopics, listTopicSubscribers, subscribeTopic, unsubscribeTopic,
-  getBroadcast, listBroadcasts,
+  getBroadcast, getPreference, listBroadcasts,
   listPreferences, setPreference,
 } from '../db.js';
-import { listTemplates, renderTemplate } from '../templates.js';
+import { listTemplates, renderBody, renderTemplate } from '../templates.js';
+import { buildUnsubscribeUrl, verifyUnsubscribeToken } from '../unsubscribe.js';
 import { config } from '../config.js';
 
 const createSchema = z.object({
@@ -109,13 +110,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // template → render thành body tại thời điểm enqueue (job chỉ mang body thuần)
+    // template → render thành body tại thời điểm enqueue (job chỉ mang body thuần).
+    // Biến hệ thống (recipient, unsubscribe_url) merge sau params người gọi — không bị ghi đè.
+    const systemParams = {
+      recipient: data.recipient,
+      channel: data.channel,
+      unsubscribe_url: buildUnsubscribeUrl(data.recipient, data.channel),
+    };
     let body: string | null | undefined = data.body;
     if (data.template) {
-      body = renderTemplate(data.template, data.params);
+      body = renderTemplate(data.template, { ...data.params, ...systemParams });
       if (body === null) {
         return reply.code(400).send({ error: `template "${data.template}" không tồn tại` });
       }
+    } else {
+      body = renderBody(body!, systemParams);
     }
 
     try {
@@ -275,4 +284,63 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     setPreference(recipient, parsed.data.channel, parsed.data.enabled);
     return { recipient, ...parsed.data };
   });
+
+  // ===== ONE-CLICK UNSUBSCRIBE (link trong nội dung notification) =====
+
+  // GET có side-effect — đây là chuẩn của link unsubscribe trong email (RFC 8058 một-click)
+  // và link này mở trực tiếp trên trình duyệt nên không thể yêu cầu header API key.
+  // An toàn: token tự ký HMAC (không forge được) và chỉ tắt kênh của đúng recipient trong token.
+  app.get('/unsubscribe', async (req, reply) => {
+    const { token } = req.query as { token?: string };
+    const payload = token ? verifyUnsubscribeToken(token) : null;
+    if (!payload) {
+      return reply.code(400).type('text/html; charset=utf-8').send(unsubscribePage(
+        'Liên kết không hợp lệ hoặc đã hết hạn',
+        'Token sai, bị sửa hoặc quá hạn dùng (365 ngày). Vui lòng liên hệ người gửi nếu bạn vẫn muốn hủy nhận tin.',
+        false,
+      ));
+    }
+    // topic → hủy đăng ký khỏi topic; không → tắt cả kênh (preference)
+    let scope: boolean;
+    if (payload.topic) {
+      scope = unsubscribeTopic(payload.topic, payload.recipient, payload.channel);
+    } else {
+      const wasEnabled = getPreference(payload.recipient, payload.channel)?.enabled ?? true;
+      setPreference(payload.recipient, payload.channel, false);
+      scope = wasEnabled;
+    }
+    const what = payload.topic ? `topic "${payload.topic}"` : `kênh ${payload.channel}`;
+    return reply.type('text/html; charset=utf-8').send(unsubscribePage(
+      scope ? 'Đã hủy nhận tin thành công' : 'Bạn đã hủy nhận tin từ trước',
+      `${payload.recipient} sẽ không còn nhận thông báo qua ${what}${payload.topic ? ' của topic này' : ''}.`,
+    ));
+  });
+}
+
+/** Trang HTML tối giản trả về khi bấm link unsubscribe — không thuộc dashboard SPA */
+function unsubscribePage(title: string, message: string, ok = true): string {
+  return `<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<style>
+  body { margin: 0; min-height: 100dvh; display: grid; place-items: center;
+         background: #0f172a; color: #e2e8f0; font-family: system-ui, sans-serif; }
+  .card { max-width: 26rem; margin: 1rem; padding: 2rem; text-align: center;
+          border: 1px solid #1e293b; border-radius: 16px; background: #16223a; }
+  .icon { font-size: 2.2rem; }
+  h1 { font-size: 1.15rem; margin: 0.75rem 0 0.5rem; color: ${ok ? '#22c55e' : '#f59e0b'}; }
+  p { font-size: 0.9rem; line-height: 1.55; color: #94a3b8; margin: 0; }
+</style>
+</head>
+<body>
+  <main class="card" role="status">
+    <div class="icon" aria-hidden="true">${ok ? '✅' : '⚠️'}</div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+  </main>
+</body>
+</html>`;
 }

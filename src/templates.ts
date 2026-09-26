@@ -23,3 +23,16 @@ export function renderTemplate(name: string, params: Record<string, unknown> = {
   const t = registry.get(name);
   return t ? t(params) : null;
 }
+
+/**
+ * Render body tự do với biến hệ thống ({{unsubscribe_url}}, {{recipient}}…) —
+ * cùng cú pháp Handlebars noEscape với templates/*.hbs. Lỗi cú pháp → trả nguyên
+ * body gốc (chèn biến là tiện ích, không được làm hỏng nội dung người dùng).
+ */
+export function renderBody(body: string, params: Record<string, unknown> = {}): string {
+  try {
+    return Handlebars.compile(body, { noEscape: true })(params);
+  } catch {
+    return body;
+  }
+}

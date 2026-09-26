@@ -20,6 +20,10 @@ services:
       API_KEY: dev-secret-123
       FAIL_RATE: "0.3"
       DASHBOARD_DIST: /app/dashboard-dist
+      # HMAC webhook + link unsubscribe (giá trị thật trong .env — xem .env.example)
+      WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-}
+      UNSUBSCRIBE_SECRET: ${UNSUBSCRIBE_SECRET:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
     volumes:
       - ./data:/app/data
     depends_on:
@@ -55,6 +59,10 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       TWILIO_FROM: ${TWILIO_FROM:-}
+      # worker fan-out broadcast cần secret + base URL để sinh link unsubscribe theo recipient
+      WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-}
+      UNSUBSCRIBE_SECRET: ${UNSUBSCRIBE_SECRET:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
     volumes:
       - ./data:/app/data
     depends_on:

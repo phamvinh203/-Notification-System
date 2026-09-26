@@ -28,4 +28,13 @@ export const config = {
   twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || null,
   twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || null,
   twilioFrom: process.env.TWILIO_FROM || null, // số gửi đi, VD +1xxxxxxxxxx
+
+  // ===== bảo mật + link hệ thống (env rỗng coi như không đặt) =====
+  // Ký HMAC payload webhook (header X-Notification-Signature) — không set = không ký
+  webhookSigningSecret: process.env.WEBHOOK_SIGNING_SECRET || null,
+  // Secret ký token link one-click unsubscribe. Fallback: WEBHOOK_SIGNING_SECRET → API_KEY
+  // → random theo process (chỉ phù hợp dev — link trong email cũ chết khi restart)
+  unsubscribeSecret: process.env.UNSUBSCRIBE_SECRET || null,
+  // URL gốc dùng dựng link unsubscribe chèn vào nội dung notification
+  publicBaseUrl: (process.env.PUBLIC_BASE_URL || 'http://localhost:3000').replace(/\/+$/, ''),
 };

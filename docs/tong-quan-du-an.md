@@ -57,6 +57,7 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 | `GET` | `/broadcasts/:id` | Chi tiết broadcast | |
 | `GET` | `/preferences/:recipient` | Xem preference người nhận | |
 | `PUT` | `/preferences/:recipient` | Bật/tắt kênh cho người nhận | Body `{channel, enabled}`; worker chặn gửi kênh bị tắt |
+| `GET` | `/unsubscribe?token=...` | **One-click unsubscribe** | Link ký HMAC chèn trong nội dung; mở trực tiếp trên trình duyệt, trả trang HTML xác nhận; sai/hết hạn (365 ngày) → 400 |
 | `GET` | `/metrics` | Prometheus metrics | Format `text/plain`; cùng chính sách auth như `/notifications*` |
 | `GET` | `/admin/queues` | Bull Board UI | Xem queue/retry/delayed job trực quan trên trình duyệt |
 
@@ -99,6 +100,21 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 - **Rate limit theo recipient**: `RATE_LIMIT_PER_MINUTE` (mặc định 10, `0` = tắt) — đếm notification của recipient trong 60s qua **trực tiếp từ DB** nên vẫn đúng khi chạy nhiều instance API. Vượt → `429`.
 - **Priority queue**: `priority: high | normal | low` map sang số BullMQ (1/5/9 — số nhỏ ưu tiên cao). Chỉ áp lúc enqueue; job replay chạy lại với priority mặc định.
 
+### 3.4c Bảo mật delivery: HMAC webhook + one-click unsubscribe
+
+**Webhook ký HMAC** (kiểu Stripe) — receiver kiểm chứng được request đến thật từ hệ thống:
+
+- Set `WEBHOOK_SIGNING_SECRET` → mỗi webhook delivery kèm header `X-Notification-Signature: t=<unix>,v1=<hex>` với `v1 = HMAC-SHA256(secret, "<t>.<raw body>")`. Không set → gửi không chữ ký (backward compatible).
+- Receiver kiểm chứng: tính lại HMAC từ `t` + **raw body** (raw, chưa parse) rồi so constant-time; từ chối timestamp quá cũ (>5 phút) để chống replay. Helper `signWebhookPayload` export để test/tích hợp.
+- Chữ ký ghi vào delivery event `sent` (detail `signed (HMAC v1)`) — tra cứu được từng lần gửi có chữ ký chưa.
+
+**One-click unsubscribe** — link hủy nhận tin chèn vào nội dung, đúng chuẩn compliance email/SMS:
+
+- Biến hệ thống khả dụng trong `body` lẫn `template` (Handlebars): `{{unsubscribe_url}}` (link ký HMAC cho đúng recipient+kênh) và `{{recipient}}`. Body thường cũng được render — không có biến nào thì nguyên văn như cũ.
+- Token: `base64url(payload).hmac` với payload `{v, recipient, channel, topic?, iat, exp}` — hết hạn sau 365 ngày, không forge được (HMAC). Secret theo thứ tự: `UNSUBSCRIBE_SECRET` → `WEBHOOK_SIGNING_SECRET` → `API_KEY` → random theo process (dev).
+- `GET /unsubscribe?token=...` (không cần API key — link mở từ email): token hợp lệ → **tắt cả kênh** (preference) nếu link ở notification đơn; **rời topic** nếu link ở broadcast (token chứa topic). Trả trang HTML xác nhận tối giản; token sai/hết hạn → 400; bấm lại idempotent ("đã hủy từ trước").
+- **Broadcast render per-recipient** trong worker: body của broadcast được render lại cho từng subscriber với link riêng — mỗi người một token, hủy không ảnh hưởng người khác. GET có side-effect là cố ý (chuẩn RFC 8058 one-click, browser không gửi được custom header).
+
 ### 3.5 Delivery tracking bằng SQLite (`src/db.ts`)
 
 - 5 bảng: `notifications`, `delivery_events`, `outbox`, `broadcasts`, `topic_subscribers`, `preferences` (nội dung + trạng thái + lịch sử + nền tảng topic/preference).
@@ -123,7 +139,7 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 
 - **Auth API key** với chính sách **reads-open**: set `API_KEY` → mọi `GET` (danh sách, chi tiết, templates, metrics) mở cho browser đọc; thao tác ghi (`POST`/`DELETE`/replay) và Bull Board `/admin/queues` yêu cầu header `x-api-key`, sai/thiếu trả `401`. `/health` luôn mở. Không set biến → tắt auth (dev local). Hiện thực qua preHandler hook trong `src/app.ts`.
 - **Phân trang** cho danh sách: `{items, total, limit, offset}` thay vì trả toàn bộ mảng.
-- **76 test tự động** (vitest): db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration qua Fastify `inject`), queue scheduling + priority, outbox pattern, worker + retry + replay + cancelled-guard, topics/broadcast/preferences/recurring. Test cần Redis **tự skip** khi Redis không chạy — local không bật Docker vẫn chạy được bộ unit.
+- **85 test tự động** (vitest): db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration qua Fastify `inject`), queue scheduling + priority, outbox pattern, worker + retry + replay + cancelled-guard, topics/broadcast/preferences/recurring, HMAC webhook signature + one-click unsubscribe (token roundtrip/forgery/expiry, trang HTML, broadcast per-recipient token). Test cần Redis **tự skip** khi Redis không chạy — local không bật Docker vẫn chạy được bộ unit.
 - **Docker hóa**: `Dockerfile` (node:22-alpine, chạy TS trực tiếp bằng tsx) + `docker-compose.yml` với 3 service `redis` / `api` / `worker`, có healthcheck (`127.0.0.1` tường minh — `localhost` trong container resolve sang `::1` sẽ refused vì Node listen IPv4), SQLite persist qua volume `./data`.
 - **CI**: GitHub Actions chạy `typecheck` + `test` trên mỗi push/PR, cấp service Redis 7.
 - **Tách entry API / Worker**: `src/index.ts` (API) và `src/start-worker.ts` (worker + outbox dispatcher, graceful shutdown SIGINT/SIGTERM).
@@ -167,6 +183,9 @@ Dashboard React ở `dashboard/` (Vite + TS + Tailwind v4 + Phosphor icons, reac
 | `DB_PATH` | `notifications.db` | Đường dẫn file SQLite |
 | `API_KEY` | *(không set — tắt auth)* | Set thì yêu cầu header `x-api-key` cho `/notifications*` và `/admin/queues` |
 | `RATE_LIMIT_PER_MINUTE` | `10` | Notification tối đa / recipient / phút. `0` = tắt. Vượt → `429` |
+| `WEBHOOK_SIGNING_SECRET` | *(không set — không ký)* | Ký HMAC payload webhook (header `X-Notification-Signature`) |
+| `UNSUBSCRIBE_SECRET` | *(fallback: WEBHOOK_SIGNING_SECRET → API_KEY)* | Secret ký token link one-click unsubscribe |
+| `PUBLIC_BASE_URL` | `http://localhost:3000` | URL gốc dựng link `{{unsubscribe_url}}` chèn vào nội dung |
 
 ---
 
@@ -214,7 +233,7 @@ docker-compose.yml        # 3 service: redis / api / worker
 6. **Auth mới ở mức API key tĩnh** — chưa có multi-tenant, hết hạn, thu hồi key.
 7. **Metrics mới là gauges trạng thái** — chưa có histogram latency, chưa gắn Prometheus/Grafana service vào compose.
 
-> Đã hoàn thành: nền tảng chất lượng (test, Docker, CI, phân trang, auth, tách process) — 2026-09-26; tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) — 2026-09-26; kiến trúc nâng cao (outbox pattern, Prometheus metrics) — 2026-09-26; dashboard frontend — 2026-09-26; ship v1.0: Fastify serve dashboard same-origin (SPA fallback theo Accept header) + Prometheus & Grafana vào compose + Dockerfile multi-stage build UI — 2026-09-26; provider thật (SMTP Ethereal/Gmail, Resend, Twilio) — 2026-09-26; **nền tảng notification: topic/broadcast, preference theo recipient, lịch lặp cron** — 2026-09-27.
+> Đã hoàn thành: nền tảng chất lượng (test, Docker, CI, phân trang, auth, tách process) — 2026-09-26; tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) — 2026-09-26; kiến trúc nâng cao (outbox pattern, Prometheus metrics) — 2026-09-26; dashboard frontend — 2026-09-26; ship v1.0: Fastify serve dashboard same-origin (SPA fallback theo Accept header) + Prometheus & Grafana vào compose + Dockerfile multi-stage build UI — 2026-09-26; provider thật (SMTP Ethereal/Gmail, Resend, Twilio) — 2026-09-26; **nền tảng notification: topic/broadcast, preference theo recipient, lịch lặp cron** — 2026-09-27; dashboard mở rộng (Broadcasts, Đối tượng) — 2026-09-27; **bảo mật delivery: HMAC webhook + one-click unsubscribe** — 2026-09-27.
 
 ### 3.11 Ship v1.0 — một lệnh có cả sản phẩm + monitoring
 
@@ -268,4 +287,5 @@ docker-compose.yml        # 3 service: redis / api / worker
 | *(chưa commit)* | Provider thật: email qua SMTP thật (preset Ethereal zero-config + host riêng qua Nodemailer) / Resend API, SMS qua Twilio REST API; send() trả info ghi vào event sent |
 | *(chưa commit)* | Secrets qua file .env (gitignored), compose không còn plaintext password |
 | *(chưa commit)* | Nền tảng notification: topic/broadcast (fan-out trong worker, id deterministic), preference recipient (status blocked), lịch lặp cron (job scheduler BullMQ v5, status recurring) — 76 test |
-| *(chưa commit)* | Dashboard mở rộng: trang Broadcasts (tiến độ realtime + chi tiết) + trang Đối tượng (topics/subscribers, gửi broadcast, preferences toggle) + field recurrence ở Tạo mới + hỗ trợ status recurring/blocked |
+| *(chưa commit)* | Dashboard mở rộng: trang Broadcasts + Đối tượng, field recurrence, hỗ trợ recurring/blocked |
+| *(chưa commit)* | Bảo mật delivery: webhook ký HMAC (X-Notification-Signature kiểu Stripe) + one-click unsubscribe (token HMAC 365 ngày, {{unsubscribe_url}} trong body/template, broadcast render per-recipient, trang xác nhận HTML) — 85 test |

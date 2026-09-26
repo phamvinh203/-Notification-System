@@ -5,6 +5,8 @@ import {
   getBroadcast, getNotification, getPreference, listTopicSubscribers, recordEvent,
   setBroadcastDispatched, setStatus, type Channel,
 } from '../db.js';
+import { renderBody } from '../templates.js';
+import { buildUnsubscribeUrl } from '../unsubscribe.js';
 
 // provider.send có thể trả về info (VD link xem email Ethereal, message id Twilio)
 // — completed event cần nó nên lưu tạm theo notificationId trong process này
@@ -64,13 +66,18 @@ async function fanOutBroadcast(broadcastId: string): Promise<void> {
     const pref = getPreference(sub.recipient, sub.channel);
     if (pref && !pref.enabled) continue;
     const notifId = broadcastNotificationId(broadcastId, sub.recipient, sub.channel);
+    // render PER-RECIPIENT: link unsubscribe ký riêng từng người (hủy = rời topic, không tắt cả kênh)
+    const body = renderBody(broadcast.body, {
+      recipient: sub.recipient,
+      unsubscribe_url: buildUnsubscribeUrl(sub.recipient, sub.channel, broadcast.topic),
+    });
     await enqueueSafe({
       id: notifId,
       broadcastId,
       channel: sub.channel,
       recipient: sub.recipient,
       subject: broadcast.subject ?? undefined,
-      body: broadcast.body,
+      body,
     });
     created++;
   }

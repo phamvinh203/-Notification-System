@@ -106,3 +106,38 @@ describe('provider thật — twilio (sms) [offline, fetch mock]', () => {
     await expect(smsProvider.send({ to: '+8490', body: 'x' })).rejects.toThrow(/\[twilio\] thiếu/);
   });
 });
+
+describe('webhook — chữ ký HMAC [offline, fetch mock]', () => {
+  it('có secret → header X-Notification-Signature đúng format, HMAC tái kiểm chứng được', async () => {
+    const f = fetchMock(200, { ok: true });
+    vi.stubGlobal('fetch', f);
+    const { webhookProvider, signWebhookPayload } = await loadProvider('../src/providers/webhook.js', {
+      WEBHOOK_SIGNING_SECRET: 'whsec_test_123',
+    });
+
+    const result = await webhookProvider.send({ to: 'https://receiver.dev/hook', subject: 'S', body: 'B' });
+
+    expect(f).toHaveBeenCalledOnce();
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://receiver.dev/hook');
+    const sig = (init.headers as Record<string, string>)['x-notification-signature'];
+    const m = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(sig ?? '');
+    expect(m).toBeTruthy(); // format Stripe-style: t=<unix>,v1=<hmac hex>
+    // receiver tái tính HMAC của "<t>.<raw body>" phải khớp v1
+    expect(signWebhookPayload('whsec_test_123', Number(m![1]), init.body as string)).toBe(m![2]);
+    expect(JSON.parse(init.body as string)).toEqual({ subject: 'S', body: 'B' });
+    expect(result).toEqual({ info: 'signed (HMAC v1)' });
+  });
+
+  it('không secret → không có header chữ ký (backward compatible)', async () => {
+    const f = fetchMock(200, { ok: true });
+    vi.stubGlobal('fetch', f);
+    const { webhookProvider } = await loadProvider('../src/providers/webhook.js', {});
+
+    const result = await webhookProvider.send({ to: 'https://receiver.dev/hook', body: 'x' });
+
+    const [, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect((init.headers as Record<string, string>)['x-notification-signature']).toBeUndefined();
+    expect(result).toBeUndefined(); // không có info
+  });
+});
