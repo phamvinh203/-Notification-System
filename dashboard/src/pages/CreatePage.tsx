@@ -32,6 +32,7 @@ export default function CreatePage() {
   const [params, setParams] = useState('{\n  "name": "Vinh",\n  "product": "Notification System"\n}');
   const [priority, setPriority] = useState<'high' | 'normal' | 'low'>('normal');
   const [sendAt, setSendAt] = useState('');
+  const [recurrence, setRecurrence] = useState('');
   const [idempotencyKey, setIdempotencyKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +43,14 @@ export default function CreatePage() {
   }, []);
 
   const meta = CHANNELS.find((c) => c.value === channel)!;
+
+  // cron thô sơ client-side (đủ 5 trường) — server validate chuẩn bằng cron-parser
+  const recurrenceError = useMemo<string | null>(() => {
+    const t = recurrence.trim();
+    if (!t) return null;
+    if (t.split(/\s+/).length !== 5) return 'Cron cần đúng 5 trường: phút giờ ngày-tháng tháng ngày-tuần — VD "0 8 * * *"';
+    return null;
+  }, [recurrence]);
 
   const parsedParams = useMemo<Record<string, unknown> | null>(() => {
     if (mode !== 'template') return {};
@@ -71,13 +80,15 @@ export default function CreatePage() {
       if (parsedParams) p.params = parsedParams;
     }
     if (sendAt) p.sendAt = new Date(sendAt).toISOString();
+    if (recurrence.trim()) p.recurrence = recurrence.trim();
     return p;
-  }, [channel, recipient, subject, body, mode, template, parsedParams, priority, sendAt]);
+  }, [channel, recipient, subject, body, mode, template, parsedParams, priority, sendAt, recurrence]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (mode === 'template' && parsedParams === null) return;
+    if (recurrenceError) return;
     setSubmitting(true);
     try {
       const res = await api.create(payload, idempotencyKey || undefined);
@@ -85,7 +96,10 @@ export default function CreatePage() {
         // trùng Idempotency-Key — dẫn tới notification cũ thay vì tạo mới
         navigate(`/notifications/${res.id}`, { state: { flash: 'Trùng Idempotency-Key — đã trả về notification có sẵn (deduplicated).' } });
       } else {
-        navigate(`/notifications/${res.id}`, { state: { flash: `Đã tạo notification (${res.status}).` } });
+        const msg = res.status === 'recurring'
+          ? 'Đã tạo lịch lặp — sẽ tự động bắn theo cron.'
+          : `Đã tạo notification (${res.status}).`;
+        navigate(`/notifications/${res.id}`, { state: { flash: msg } });
       }
     } catch (err) {
       const hint = err instanceof ApiError && err.status === 401 ? ' — thao tác ghi cần API key, nhập ở thanh trên' : '';
@@ -229,7 +243,7 @@ export default function CreatePage() {
             )}
           </fieldset>
 
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Field id="priority" label="Ưu tiên">
               <select id="priority" value={priority} onChange={(e) => setPriority(e.target.value as typeof priority)} className={`${inputCls} cursor-pointer`}>
                 <option value="high">Cao</option>
@@ -237,13 +251,30 @@ export default function CreatePage() {
                 <option value="low">Thấp</option>
               </select>
             </Field>
-            <Field id="sendAt" label="Hẹn giờ gửi" hint="Bỏ trống = gửi ngay">
+            <Field id="sendAt" label="Hẹn giờ gửi" hint={recurrence.trim() ? 'Bị bỏ qua khi có lịch lặp' : 'Bỏ trống = gửi ngay'}>
               <input
                 id="sendAt"
                 type="datetime-local"
                 value={sendAt}
                 onChange={(e) => setSendAt(e.target.value)}
                 className={`${inputCls} cursor-pointer`}
+              />
+            </Field>
+            <Field
+              id="recurrence"
+              label="Lịch lặp (cron)"
+              error={recurrenceError ?? undefined}
+              hint='Cron 5 trường — VD "0 8 * * *" = 8h sáng mỗi ngày. Bỏ trống = gửi một lần'
+            >
+              <input
+                id="recurrence"
+                type="text"
+                value={recurrence}
+                onChange={(e) => setRecurrence(e.target.value)}
+                placeholder="0 8 * * *"
+                aria-invalid={recurrenceError !== null}
+                aria-describedby={recurrenceError ? 'recurrence-error' : 'recurrence-hint'}
+                className={`${inputCls} font-mono`}
               />
             </Field>
             <Field id="idem" label="Idempotency-Key" hint="Tránh gửi trùng khi retry">
@@ -263,7 +294,7 @@ export default function CreatePage() {
 
           <button
             type="submit"
-            disabled={submitting || (mode === 'template' && parsedParams === null)}
+            disabled={submitting || (mode === 'template' && parsedParams === null) || recurrenceError !== null}
             className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-lg bg-accent px-5 text-sm font-semibold text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <PaperPlaneRight size={17} weight="bold" aria-hidden="true" />

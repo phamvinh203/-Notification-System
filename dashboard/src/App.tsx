@@ -4,11 +4,13 @@ import {
   BellRinging,
   ChartLineUp,
   Key,
+  Megaphone,
   Moon,
   PlusCircle,
   Sun,
   ArrowSquareOut,
   ListChecks,
+  Users,
 } from '@phosphor-icons/react';
 import { apiBase } from './api';
 
@@ -19,6 +21,8 @@ const NAV: Array<{ to: string; label: string; icon: typeof ChartLineUp; end?: bo
   { to: '/', label: 'Tổng quan', icon: ChartLineUp, end: true },
   { to: '/notifications', label: 'Thông báo', icon: ListChecks },
   { to: '/create', label: 'Tạo mới', icon: PlusCircle },
+  { to: '/broadcasts', label: 'Broadcasts', icon: Megaphone },
+  { to: '/audience', label: 'Đối tượng', icon: Users },
 ];
 
 function useHealth(): boolean | null {

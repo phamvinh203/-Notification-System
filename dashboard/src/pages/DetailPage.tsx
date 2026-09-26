@@ -8,7 +8,8 @@ import { Alert } from '../components/ui';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { fmtDateTime } from '../utils';
 
-const IN_FLIGHT: Array<string> = ['scheduled', 'queued', 'processing'];
+// recurring cũng "live": lịch tự bắn theo cron, timeline liên tục có event mới
+const IN_FLIGHT: Array<string> = ['scheduled', 'queued', 'processing', 'recurring'];
 
 export default function DetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -51,7 +52,7 @@ export default function DetailPage() {
     setBusy(true);
     try {
       await api.cancel(id!);
-      setFlash('Đã hủy notification.');
+      setFlash(row?.status === 'recurring' ? 'Đã gỡ lịch lặp khỏi queue.' : 'Đã hủy notification.');
       setConfirmCancel(false);
       await load();
     } catch (e) {
@@ -88,7 +89,8 @@ export default function DetailPage() {
       </div>
     );
 
-  const canCancel = row.status === 'scheduled';
+  const isRecurring = row.status === 'recurring';
+  const canCancel = row.status === 'scheduled' || isRecurring;
   const canReplay = row.status === 'failed';
 
   return (
@@ -128,6 +130,22 @@ export default function DetailPage() {
                 <dd className="tabular text-xs">{fmtDateTime(row.scheduled_at)}</dd>
               </>
             )}
+            {row.recurrence && (
+              <>
+                <dt className="text-muted-fg">Lịch lặp (cron)</dt>
+                <dd><code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{row.recurrence}</code></dd>
+              </>
+            )}
+            {row.broadcast_id && (
+              <>
+                <dt className="text-muted-fg">Broadcast</dt>
+                <dd>
+                  <Link to={`/broadcasts/${row.broadcast_id}`} className="font-mono text-xs text-info underline underline-offset-2">
+                    {row.broadcast_id}
+                  </Link>
+                </dd>
+              </>
+            )}
           </dl>
           <div>
             <p className="mb-1 text-sm font-medium">Nội dung</p>
@@ -142,7 +160,7 @@ export default function DetailPage() {
                 className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-lg bg-danger px-3.5 text-sm font-semibold text-white hover:opacity-90"
               >
                 <Prohibit size={15} weight="bold" aria-hidden="true" />
-                Hủy job hẹn giờ
+                {isRecurring ? 'Gỡ lịch lặp' : 'Hủy job hẹn giờ'}
               </button>
             )}
             {canReplay && (
@@ -175,7 +193,11 @@ export default function DetailPage() {
       <ConfirmDialog
         open={confirmCancel}
         title="Hủy notification này?"
-        message={`Job hẹn giờ đến "${row.recipient}" sẽ bị gỡ khỏi queue và không bao giờ được gửi.`}
+        message={
+          isRecurring
+            ? `Lịch lặp "${row.recurrence}" sẽ bị gỡ khỏi queue — không còn tự bắn nữa.`
+            : `Job hẹn giờ đến "${row.recipient}" sẽ bị gỡ khỏi queue và không bao giờ được gửi.`
+        }
         confirmLabel="Hủy notification"
         danger
         busy={busy}

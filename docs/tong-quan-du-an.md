@@ -148,9 +148,11 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 Dashboard React ở `dashboard/` (Vite + TS + Tailwind v4 + Phosphor icons, react-router) — design system sinh từ skill ui-ux-pro-max: **glassmorphism dark tech** (nền `#0F172A`, accent xanh trạng thái `#22C55E`), font Fira Code/Fira Sans, density 8, dark mặc định + light mode, tôn trọng `prefers-reduced-motion`.
 
 - **Tổng quan**: stat tiles trạng thái + queue BullMQ + bar theo kênh, poll `/metrics` mỗi 3s có nút pause, nhãn "Cập nhật lúc …" và cảnh báo stale.
-- **Thông báo**: bảng lọc status/channel + phân trang, hành động hủy (confirm dialog) và replay, auto-refresh 5s tùy chọn.
-- **Chi tiết**: thông tin + nội dung + **timeline delivery events** màu theo loại event; tự poll 2s khi notification đang chạy (scheduled/queued/processing).
-- **Tạo mới**: form chọn kênh (radio card), recipient helper theo kênh, body HOẶC template + params JSON (validate), priority, hẹn giờ, Idempotency-Key, **preview payload live**, báo lỗi server rõ nguyên nhân + cách khắc phục (401 → gợi ý đặt API key).
+- **Thông báo**: bảng lọc status/channel (gồm `recurring`, `blocked`) + phân trang, hành động hủy (confirm dialog — hủy được cả lịch lặp) và replay, auto-refresh 5s tùy chọn; row lịch lặp hiển thị chip cron.
+- **Chi tiết**: thông tin + nội dung + **timeline delivery events** màu theo loại event; tự poll 2s khi notification đang chạy (scheduled/queued/processing/**recurring**); hiển thị chip cron và link về broadcast cha nếu có.
+- **Tạo mới**: form chọn kênh (radio card), recipient helper theo kênh, body HOẶC template + params JSON (validate), priority, hẹn giờ, **lịch lặp cron (validate 5 trường phía client + server)**, Idempotency-Key, **preview payload live**, báo lỗi server rõ nguyên nhân + cách khắc phục (401 → gợi ý đặt API key).
+- **Broadcasts** (mới): bảng broadcast kèm **thanh tiến độ** sent/failed/pending realtime (auto-refresh 5s), trang chi tiết 1 broadcast hiển thị info + progress + danh sách notification được fan-out (link tới từng notification).
+- **Đối tượng** (mới): tab Topics & Broadcast — đăng ký/hủy subscriber theo topic (form + datalist topic có sẵn), danh sách topic + số subscriber, form gửi broadcast; tab Preferences — tra cứu recipient, toggle bật/tắt 4 kênh (switch UI), gọi `PUT /preferences` trực tiếp.
 - API key thao tác ghi nhập ở topbar, lưu `localStorage`. Dev proxy `/api` → `:3000` (prefix riêng tránh đụng SPA route `/notifications`).
 
 ---
@@ -266,3 +268,4 @@ docker-compose.yml        # 3 service: redis / api / worker
 | *(chưa commit)* | Provider thật: email qua SMTP thật (preset Ethereal zero-config + host riêng qua Nodemailer) / Resend API, SMS qua Twilio REST API; send() trả info ghi vào event sent |
 | *(chưa commit)* | Secrets qua file .env (gitignored), compose không còn plaintext password |
 | *(chưa commit)* | Nền tảng notification: topic/broadcast (fan-out trong worker, id deterministic), preference recipient (status blocked), lịch lặp cron (job scheduler BullMQ v5, status recurring) — 76 test |
+| *(chưa commit)* | Dashboard mở rộng: trang Broadcasts (tiến độ realtime + chi tiết) + trang Đối tượng (topics/subscribers, gửi broadcast, preferences toggle) + field recurrence ở Tạo mới + hỗ trợ status recurring/blocked |

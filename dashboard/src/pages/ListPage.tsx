@@ -10,10 +10,12 @@ import { fmtDateTime, timeAgo } from '../utils';
 const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: 'Mọi trạng thái' },
   { value: 'scheduled', label: 'Hẹn giờ' },
+  { value: 'recurring', label: 'Lịch lặp' },
   { value: 'queued', label: 'Hàng đợi' },
   { value: 'processing', label: 'Đang gửi' },
   { value: 'sent', label: 'Đã gửi' },
   { value: 'failed', label: 'Thất bại' },
+  { value: 'blocked', label: 'Bị chặn' },
   { value: 'cancelled', label: 'Đã hủy' },
 ];
 const CHANNEL_OPTIONS = ['', 'email', 'sms', 'push', 'webhook'];
@@ -212,17 +214,22 @@ export default function ListPage() {
                   </td>
                   <td className="max-w-56 truncate px-3 py-2.5" title={n.subject ?? n.body}>
                     {n.subject ?? n.body}
+                    {n.status === 'recurring' && n.recurrence && (
+                      <span className="ml-1.5 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-fg" title={`Cron: ${n.recurrence}`}>
+                        {n.recurrence}
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-2.5"><StatusBadge status={n.status as Status} /></td>
                   <td className="px-3 py-2.5">
                     <div className="flex justify-end gap-1">
-                      {n.status === 'scheduled' && (
+                      {(n.status === 'scheduled' || n.status === 'recurring') && (
                         <button
                           type="button"
                           onClick={() => setCancelTarget(n)}
                           className={iconBtn}
                           aria-label={`Hủy notification đến ${n.recipient}`}
-                          title="Hủy job hẹn giờ"
+                          title={n.status === 'recurring' ? 'Gỡ lịch lặp' : 'Hủy job hẹn giờ'}
                         >
                           <Prohibit size={16} aria-hidden="true" />
                         </button>
@@ -264,7 +271,9 @@ export default function ListPage() {
         title="Hủy notification này?"
         message={
           cancelTarget
-            ? `Job hẹn giờ đến "${cancelTarget.recipient}" sẽ bị gỡ khỏi queue và không bao giờ được gửi.`
+            ? cancelTarget.status === 'recurring'
+              ? `Lịch lặp "${cancelTarget.recurrence}" đến "${cancelTarget.recipient}" sẽ bị gỡ khỏi queue — không còn tự bắn nữa.`
+              : `Job hẹn giờ đến "${cancelTarget.recipient}" sẽ bị gỡ khỏi queue và không bao giờ được gửi.`
             : ''
         }
         confirmLabel="Hủy notification"

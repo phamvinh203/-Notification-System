@@ -7,6 +7,8 @@ const STATUS_META: Record<Status, { label: string; cls: string; dot: string }> =
   queued: { label: 'Trong hàng đợi', cls: 'border-line bg-muted text-fg', dot: 'bg-muted-fg' },
   scheduled: { label: 'Hẹn giờ', cls: 'border-warning/30 bg-warning/10 text-warning', dot: 'bg-warning' },
   cancelled: { label: 'Đã hủy', cls: 'border-line bg-muted text-muted-fg', dot: 'bg-muted-fg' },
+  recurring: { label: 'Lịch lặp', cls: 'border-info/30 bg-info/10 text-info', dot: 'bg-info' },
+  blocked: { label: 'Bị chặn', cls: 'border-warning/30 bg-warning/10 text-warning', dot: 'bg-warning' },
 };
 
 export function StatusBadge({ status }: { status: Status }) {
