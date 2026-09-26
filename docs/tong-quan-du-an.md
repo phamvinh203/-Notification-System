@@ -40,10 +40,12 @@ Hiện tại **API và Worker đã tách thành 2 entry riêng** (`src/index.ts`
 | Method | Path | Chức năng | Ghi chú |
 |---|---|---|---|
 | `GET` | `/health` | Health check | Luôn mở, không cần API key — dùng cho docker healthcheck |
-| `POST` | `/notifications` | Tạo yêu cầu gửi thông báo | Body: `{channel, recipient, subject?, body, sendAt?}`. Trả `202 {id, status}` |
+| `POST` | `/notifications` | Tạo yêu cầu gửi thông báo | Body: `{channel, recipient, subject?, body \| template, params?, sendAt?, priority?}`. Trả `202 {id, status}` |
 | `GET` | `/notifications` | Danh sách, có **phân trang** | Lọc theo `status`, `channel`; `limit` (1–100, default 20), `offset`. Trả `{items, total, limit, offset}` |
 | `GET` | `/notifications/:id` | Chi tiết | Trả notification + **timeline delivery events** |
 | `DELETE` | `/notifications/:id` | Hủy notification | Chỉ hủy được khi đang `scheduled`, ngược lại trả `409` |
+| `POST` | `/notifications/:id/replay` | Đẩy lại job dead | Chỉ khi status `failed`; ngược lại `409` |
+| `GET` | `/templates` | Danh sách template | Tên các template `.hbs` khả dụng |
 | `GET` | `/admin/queues` | Bull Board UI | Xem queue/retry/delayed job trực quan trên trình duyệt |
 
 - Body đầu vào được **validate bằng Zod** (`src/api/routes.ts`): `channel` chỉ nhận `email | push | sms`, sai format trả `400` kèm chi tiết lỗi. Query params phân trang cũng validate bằng Zod (`limit=0` → 400).
@@ -67,11 +69,20 @@ Hiện tại **API và Worker đã tách thành 2 entry riêng** (`src/index.ts`
 - **Retry tự động khi provider fail**: BullMQ tự retry tối đa 3 lần với backoff 1s/2s/4s. Hết lượt → DB chuyển `failed`.
 - Worker lắng nghe event `completed` / `failed` để cập nhật trạng thái và **ghi delivery event** sau mỗi bước (thấy rõ từng lần retry trong timeline).
 
-### 3.4 Mock providers cho 3 kênh (`src/providers/`)
+### 3.4 Providers cho 4 kênh (`src/providers/`)
 
-- Ba provider `email`, `push`, `sms` cùng implements một interface `NotificationProvider` duy nhất (`send()`).
-- Mô phỏng thật: trễ ngẫu nhiên **300–800ms**, fail ngẫu nhiên theo xác suất **`FAIL_RATE`** (mặc định `0.3`).
+- Bốn provider `email`, `push`, `sms`, `webhook` cùng implements một interface `NotificationProvider` duy nhất (`send()`).
+- **Mock** (email/push/sms): trễ ngẫu nhiên **300–800ms**, fail ngẫu nhiên theo xác suất **`FAIL_RATE`** (mặc định `0.3`).
+- **Webhook (thật)**: `recipient` là URL http(s) — provider POST JSON `{subject, body}` tới đó (timeout 5s), đọc status trả về để quyết định thành công/thất bại. Đây là adapter "thật" đầu tiên của hệ thống.
 - Muốn thay provider thật (Nodemailer/Resend/Twilio/FCM...) chỉ cần đổi body của `send()` — kiến trúc đã tách sẵn.
+
+### 3.4b Tính năng notification "thật" hơn
+
+- **Idempotency key**: header `Idempotency-Key` — gửi trùng key nhận lại notification cũ (`200 {id, status, deduplicated: true}`) thay vì tạo mới. Key lưu cột `idempotency_key` với **partial unique index** trong SQLite; khi 2 request cùng key chạy song song, unique index chặn và request thua trả về row của request thắng. Check dedupe diễn ra **trước** rate limit để client retry không bị 429.
+- **Template engine** (Handlebars, `src/templates.ts`): thay `body` bằng `template` + `params`. Template là file `.hbs` trong `templates/` (`otp`, `welcome` có sẵn), nạp lúc khởi động, compile với `noEscape` (plain text). Body được render **tại thời điểm enqueue** — job trên queue chỉ mang body thuần. `GET /templates` liệt kê template khả dụng. Validate: phải có đúng một trong hai `body` hoặc `template`.
+- **Replay dead job**: `POST /notifications/:id/replay` — chỉ nhận notification status `failed` (ngược lại 409). Remove job cũ khỏi failed set rồi add lại với `jobId` cũ, status về `queued`, timeline ghi event `replayed`.
+- **Rate limit theo recipient**: `RATE_LIMIT_PER_MINUTE` (mặc định 10, `0` = tắt) — đếm notification của recipient trong 60s qua **trực tiếp từ DB** nên vẫn đúng khi chạy nhiều instance API. Vượt → `429`.
+- **Priority queue**: `priority: high | normal | low` map sang số BullMQ (1/5/9 — số nhỏ ưu tiên cao). Chỉ áp lúc enqueue; job replay chạy lại với priority mặc định.
 
 ### 3.5 Delivery tracking bằng SQLite (`src/db.ts`)
 
@@ -113,6 +124,7 @@ Hiện tại **API và Worker đã tách thành 2 entry riêng** (`src/index.ts`
 | `FAIL_RATE` | `0.3` | Xác suất mock provider fail (0–1). Đặt `0.5`+ để thấy retry rõ |
 | `DB_PATH` | `notifications.db` | Đường dẫn file SQLite |
 | `API_KEY` | *(không set — tắt auth)* | Set thì yêu cầu header `x-api-key` cho `/notifications*` và `/admin/queues` |
+| `RATE_LIMIT_PER_MINUTE` | `10` | Notification tối đa / recipient / phút. `0` = tắt. Vượt → `429` |
 
 ---
 
@@ -124,18 +136,21 @@ src/
 ├── start-worker.ts       # Entry Worker: chạy worker + graceful shutdown
 ├── app.ts                # buildApp(): Fastify + /health + auth hook + routes + Bull Board
 ├── config.ts             # Đọc biến môi trường
-├── db.ts                 # SQLite: schema, CRUD + phân trang + delivery events
+├── db.ts                 # SQLite: schema + migration nhẹ, CRUD + phân trang + delivery events
+├── templates.ts          # Registry Handlebars: nạp templates/*.hbs, render theo tên
 ├── demo.ts               # Script demo end-to-end
 ├── api/
-│   └── routes.ts         # REST endpoints + Zod validation (body + query phân trang)
+│   └── routes.ts         # REST endpoints + Zod validation + idempotency + rate limit + replay
 ├── queue/
-│   ├── queue.ts          # BullMQ Queue + logic enqueue (delay, retry, jobId)
+│   ├── queue.ts          # BullMQ Queue + enqueue (delay, retry, priority, idempotency) + replay
 │   └── worker.ts         # Worker consume + retry + ghi events
 └── providers/
     ├── types.ts          # Interface NotificationProvider
     ├── email.ts / sms.ts / push.ts   # 3 mock providers
+    ├── webhook.ts        # Provider thật: POST JSON tới URL
     └── index.ts          # Registry: channel → provider
 
+templates/                # Template Handlebars (otp.hbs, welcome.hbs)
 tests/                    # vitest: db (unit), api/queue/worker (integration, tự skip khi không có Redis)
 Dockerfile                # node:22-alpine, chạy TS bằng tsx
 docker-compose.yml        # 3 service: redis / api / worker
@@ -148,15 +163,15 @@ docker-compose.yml        # 3 service: redis / api / worker
 
 Đây là những điểm **cố ý chưa làm** — là hướng phát triển tiếp theo của dự án:
 
-1. **Provider vẫn là mock** — chưa gửi ra ngoài thế giới thật.
+1. **Provider email/push/sms vẫn là mock** — chỉ webhook là thật; cắm Resend/Twilio/FCM cần tài khoản dịch vụ.
 2. **SQLite thay cho DB production** — phù hợp demo, chưa phù hợp nhiều instance ghi đồng thời.
-3. **Chưa có idempotency key** — client gửi lại 2 lần sẽ tạo 2 notification.
-4. **Job `failed` chưa có cơ chế đẩy lại** (replay dead job).
-5. **Chưa có rate limiting / throttle** theo recipient.
+3. **Outbox pattern** — ghi DB và đẩy queue vẫn là 2 bước riêng, chưa atomic (trường hợp hiếm: ghi DB xong, process chết trước khi add job → notification kẹt queued mãi).
+4. **Quản lý template qua API/DB** — template hiện là file `.hbs` cố định, sửa là phải deploy lại.
+5. **Rate limit mới đếm lúc tạo** — chưa throttle ở worker (xả job đều tay).
 6. **Chưa có OpenAPI docs** tự sinh từ zod schema.
 7. **Auth mới ở mức API key tĩnh** — chưa có multi-tenant, hết hạn, thu hồi key.
 
-> Đã hoàn thành từ đợt "nền tảng chất lượng" (2026-09-26): test tự động (30 test), Docker hóa 3 service, CI GitHub Actions, phân trang, auth API key, tách entry API/worker, health check.
+> Đã hoàn thành: nền tảng chất lượng (test, Docker, CI, phân trang, auth, tách process) — 2026-09-26; tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) — 2026-09-26.
 
 ---
 

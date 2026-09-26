@@ -90,4 +90,32 @@ describe.skipIf(!hasRedis)('worker + retry logic (cần Redis)', () => {
     expect(events.filter((e) => e === 'retry_scheduled')).toHaveLength(2);
     expect(events).toContain('dead');
   });
+
+  it('replay job dead → chạy lại thành công, timeline có event replayed', async () => {
+    // 1. làm job fail hết attempts
+    providerState.failTimes = 99;
+    await seedJob('w-replay');
+    await waitForStatus('w-replay', ['failed']);
+    const callsAfterFail = providerState.sendCalls;
+    expect(callsAfterFail).toBe(3);
+
+    // 2. replay khi provider đã "khỏi" → chạy lại từ đầu
+    providerState.failTimes = 0;
+    const queueMod2 = queueMod;
+    const result = await queueMod2.replayNotification('w-replay');
+    expect(result).toEqual({ id: 'w-replay', status: 'queued' });
+
+    const st = await waitForStatus('w-replay', ['sent']);
+    expect(st).toBe('sent');
+    expect(providerState.sendCalls).toBe(callsAfterFail + 1);
+    const events = getNotification('w-replay')!.events.map((e) => e.event);
+    expect(events).toContain('replayed');
+    expect(events[events.length - 1]).toBe('sent');
+  });
+
+  it('replay notification chưa fail → trả not_failed', async () => {
+    await seedJob('w-notdead');
+    const result = await queueMod.replayNotification('w-notdead');
+    expect(result).toBe('not_failed');
+  });
 });

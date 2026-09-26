@@ -9,6 +9,7 @@ RUN npm ci
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY templates ./templates
 
 ENV NODE_ENV=production
 EXPOSE 3000

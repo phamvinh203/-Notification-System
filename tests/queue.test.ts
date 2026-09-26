@@ -63,4 +63,13 @@ describe.skipIf(!hasRedis)('queue: enqueueNotification (cần Redis)', () => {
     expect(job!.id).toBe(res.id);
     expect(job!.data.notificationId).toBe(res.id);
   });
+
+  it('priority: high/normal/low map sang số BullMQ (nhỏ = ưu tiên cao)', async () => {
+    const high = await queueMod.enqueueNotification({ channel: 'email', recipient: 'a@b.c', body: 'x', priority: 'high' });
+    const low = await queueMod.enqueueNotification({ channel: 'email', recipient: 'a@b.c', body: 'x', priority: 'low' });
+    const none = await queueMod.enqueueNotification({ channel: 'email', recipient: 'a@b.c', body: 'x' });
+    expect((await queueMod.notificationQueue.getJob(high.id))!.opts.priority).toBe(1);
+    expect((await queueMod.notificationQueue.getJob(low.id))!.opts.priority).toBe(9);
+    expect((await queueMod.notificationQueue.getJob(none.id))!.opts.priority).toBeUndefined();
+  });
 });

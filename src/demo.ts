@@ -6,14 +6,14 @@ if (process.env.API_KEY) headers['x-api-key'] = process.env.API_KEY;
 
 interface EnqueueRes { id: string; status: string }
 
-async function send(payload: Record<string, unknown>): Promise<EnqueueRes> {
+async function send(payload: Record<string, unknown>, extraHeaders: Record<string, string> = {}): Promise<EnqueueRes & { deduplicated?: true }> {
   const res = await fetch(`${BASE}/notifications`, {
     method: 'POST',
-    headers,
+    headers: { ...headers, ...extraHeaders },
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`POST fail ${res.status}: ${await res.text()}`);
-  return res.json() as Promise<EnqueueRes>;
+  return res.json() as Promise<EnqueueRes & { deduplicated?: true }>;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -38,6 +38,12 @@ async function main(): Promise<void> {
   const sendAt = new Date(Date.now() + 30_000).toISOString();
   const sched = await send({ channel: 'email', recipient: 'scheduled@example.com', subject: 'Demo scheduled', body: 'Gửi sau 30s', sendAt });
   console.log(`[email scheduled] id=${sched.id} status=${sched.status} (sẽ chạy lúc ${sendAt})`);
+
+  // 2b. Template + idempotency: gửi OTP bằng template, rồi retry cùng Idempotency-Key → dedupe
+  const otpPayload = { channel: 'sms', recipient: '+84901234567', template: 'otp', params: { code: '246810', minutes: 5 } };
+  const otp1 = await send(otpPayload, { 'idempotency-key': 'demo-otp-246810' });
+  const otp2 = await send(otpPayload, { 'idempotency-key': 'demo-otp-246810' });
+  console.log(`[sms template] id=${otp1.id} — gửi lại cùng key: deduplicated=${otp2.deduplicated === true ? 'true (cùng id ' + otp2.id + ')' : 'false'}`);
 
   // 3. Đợi worker xử lý rồi in timeline
   console.log('\nĐợi 12s cho worker xử lý 3 job đầu...');

@@ -5,4 +5,6 @@ export const config = {
   dbPath: process.env.DB_PATH ?? 'notifications.db',
   // chuỗi rỗng coi như không set — auth chỉ bật khi có key thật
   apiKey: process.env.API_KEY || null,
+  // 0 = tắt rate limit; đặt thấp (VD 3) để demo 429 nhanh
+  rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? 10),
 };

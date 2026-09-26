@@ -47,6 +47,7 @@ npm run demo
 | `FAIL_RATE` | `0.3` | Xác suất mock provider fail (0–1). `0.5`+ để thấy retry rõ |
 | `DB_PATH` | `notifications.db` | File SQLite |
 | `API_KEY` | *(không set — tắt auth)* | Set thì mọi endpoint `/notifications*` và `/admin/queues` yêu cầu header `x-api-key` |
+| `RATE_LIMIT_PER_MINUTE` | `10` | Số notification tối đa / recipient / phút. `0` = tắt. Vượt → `429` |
 
 ## Auth (API key)
 
@@ -65,11 +66,22 @@ curl -H "x-api-key: dev-secret-123" http://localhost:3000/notifications
 | Method | Path | Mô tả |
 |---|---|---|
 | GET | `/health` | Health check — luôn mở, không cần key |
-| POST | `/notifications` | Gửi: `{channel, recipient, subject?, body, sendAt?}`. Có `sendAt` → scheduled. Trả `202 {id, status}` |
+| POST | `/notifications` | Gửi: `{channel, recipient, subject?, body \| template, params?, sendAt?, priority?}`. Có `sendAt` → scheduled. Trả `202 {id, status}` |
 | GET | `/notifications?status=&channel=&limit=&offset=` | Danh sách, **phân trang**: trả `{items, total, limit, offset}`. `limit` 1–100 (default 20), `offset` ≥ 0 |
 | GET | `/notifications/:id` | Chi tiết + timeline delivery events |
 | DELETE | `/notifications/:id` | Hủy job scheduled (409 nếu không phải scheduled) |
+| POST | `/notifications/:id/replay` | Đẩy lại job đã **dead** (chỉ khi status `failed`) — chạy lại với cấu hình retry như mới |
+| GET | `/templates` | Danh sách template khả dụng |
 | GET | `/admin/queues` | Bull Board UI — xem queue/retry/delayed trực quan |
+
+## Tính năng
+
+- **Idempotency**: gửi header `Idempotency-Key` — client retry cùng key sẽ nhận lại notification cũ (`200 {id, status, deduplicated: true}`) thay vì tạo mới. Key lưu unique index trong SQLite, an toàn cả khi 2 request chạy song song.
+- **Template** (Handlebars): thay `body` bằng `template` + `params` — body được render lúc enqueue. Template là file `.hbs` trong `templates/` (`otp`, `welcome` sẵn có). Đúng một trong hai: `body` hoặc `template`.
+- **Channel `webhook`**: provider "thật" đầu tiên — `recipient` là URL http(s), hệ thống POST JSON `{subject, body}` tới đó (timeout 5s). Thử với https://webhook.site.
+- **Priority**: `priority: "high" \| "normal" \| "low"` (mặc định normal) — job ưu tiên cao được xử lý trước.
+- **Rate limit**: theo recipient, mặc định 10/phút (đếm từ DB nên đúng cả khi chạy nhiều instance API). Vượt → `429`.
+- **Replay dead job**: job fail hết 3 lượt bị đánh dấu `failed` — đẩy lại bằng endpoint replay khi sự cố bên dưới đã hết.
 
 ## Ví dụ curl
 
@@ -84,6 +96,15 @@ curl -X POST http://localhost:3000/notifications -H 'content-type: application/j
 
 # Trang 2, mỗi trang 10 dòng (kèm key nếu bật auth)
 curl -H "x-api-key: dev-secret-123" "http://localhost:3000/notifications?limit=10&offset=10"
+
+# Gửi OTP bằng template + idempotency key (retry an toàn)
+curl -X POST http://localhost:3000/notifications -H 'content-type: application/json' \
+  -H 'idempotency-key: otp-user-42' \
+  -d '{"channel":"sms","recipient":"+84901234567","template":"otp","params":{"code":"246810","minutes":5}}'
+
+# Webhook — POST JSON tới URL của bạn
+curl -X POST http://localhost:3000/notifications -H 'content-type: application/json' \
+  -d '{"channel":"webhook","recipient":"https://webhook.site/xxx","body":"ping"}'
 ```
 
 ## Test
@@ -93,7 +114,7 @@ npm test          # chạy 1 lần
 npm run test:watch
 ```
 
-- **30 test**: db layer (unit), REST API + auth + pagination (integration), queue scheduling, worker + retry logic (integration).
+- **44 test**: db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit (integration), queue scheduling + priority, worker + retry + replay (integration).
 - Test cần Redis sẽ **tự skip** nếu Redis không chạy — local không bật Docker vẫn được bộ unit test; **CI luôn chạy đủ** (GitHub Actions cấp service Redis).
 - Chạy từng process riêng khi debug: `npm run dev:api` / `npm run dev:worker`.
 
