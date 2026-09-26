@@ -1,7 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { enqueueNotification, notificationQueue, replayNotification, type PriorityName } from '../queue/queue.js';
-import { countNotifications, countRecentByRecipient, findByIdempotencyKey, getNotification, listNotifications, recordEvent, setStatus } from '../db.js';
+import { CronExpressionParser } from 'cron-parser';
+import {
+  enqueueNotification, enqueueBroadcast, notificationQueue, replayNotification, removeRecurringJob,
+  type PriorityName,
+} from '../queue/queue.js';
+import {
+  countNotifications, countRecentByRecipient, findByIdempotencyKey, getNotification, listNotifications,
+  recordEvent, setStatus,
+  listTopics, listTopicSubscribers, subscribeTopic, unsubscribeTopic,
+  getBroadcast, listBroadcasts,
+  listPreferences, setPreference,
+} from '../db.js';
 import { listTemplates, renderTemplate } from '../templates.js';
 import { config } from '../config.js';
 
@@ -15,6 +25,8 @@ const createSchema = z.object({
   params: z.record(z.unknown()).optional(),
   sendAt: z.string().datetime().optional(),
   priority: z.enum(['high', 'normal', 'low']).optional(),
+  // cron 5 trường (VD "0 8 * * *") — có thì thành lịch lặp
+  recurrence: z.string().optional(),
 }).superRefine((d, ctx) => {
   if (Boolean(d.body) === Boolean(d.template)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['body'], message: 'cần đúng một trong hai: body hoặc template' });
@@ -27,9 +39,41 @@ const createSchema = z.object({
 const listQuerySchema = z.object({
   status: z.string().optional(),
   channel: z.string().optional(),
+  broadcast: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+const subscribeSchema = z.object({
+  recipient: z.string().min(1),
+  channel: z.enum(['email', 'push', 'sms', 'webhook']),
+});
+
+const broadcastSendSchema = z.object({
+  subject: z.string().optional(),
+  body: z.string().min(1).optional(),
+  template: z.string().optional(),
+  params: z.record(z.unknown()).optional(),
+  priority: z.enum(['high', 'normal', 'low']).optional(),
+}).superRefine((d, ctx) => {
+  if (Boolean(d.body) === Boolean(d.template)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['body'], message: 'cần đúng một trong hai: body hoặc template' });
+  }
+});
+
+const preferenceSchema = z.object({
+  channel: z.enum(['email', 'push', 'sms', 'webhook']),
+  enabled: z.boolean(),
+});
+
+function cronValidationError(expr: string): string | null {
+  try {
+    CronExpressionParser.parse(expr);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : 'cron không hợp lệ';
+  }
+}
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.post('/notifications', async (req, reply) => {
@@ -38,6 +82,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
     const data = parsed.data;
+
+    if (data.recurrence) {
+      const cronError = cronValidationError(data.recurrence);
+      if (cronError) return reply.code(400).send({ error: `recurrence không hợp lệ: ${cronError}` });
+    }
 
     // idempotency: header Idempotency-Key — client retry an toàn.
     // check sớm TRƯỚC rate limit để retry idempotent không bị 429 (enqueue bên dưới vẫn check lại phòng race)
@@ -69,16 +118,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    const result = await enqueueNotification({
-      channel: data.channel,
-      recipient: data.recipient,
-      subject: data.subject,
-      body: body!,
-      sendAt: data.sendAt,
-      idempotencyKey,
-      priority: data.priority as PriorityName | undefined,
-    });
-    return reply.code(result.deduplicated ? 200 : 202).send(result);
+    try {
+      const result = await enqueueNotification({
+        channel: data.channel,
+        recipient: data.recipient,
+        subject: data.subject,
+        body: body!,
+        sendAt: data.sendAt,
+        idempotencyKey,
+        priority: data.priority as PriorityName | undefined,
+        recurrence: data.recurrence,
+      });
+      return reply.code(result.deduplicated ? 200 : 202).send(result);
+    } catch (e) {
+      return reply.code(400).send({ error: e instanceof Error ? e.message : 'enqueue thất bại' });
+    }
   });
 
   app.get('/notifications', async (req, reply) => {
@@ -86,8 +140,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
-    const { status, channel, limit, offset } = parsed.data;
-    const filter = { status, channel };
+    const { status, channel, broadcast, limit, offset } = parsed.data;
+    const filter = { status, channel, broadcastId: broadcast };
     return {
       items: listNotifications(filter, { limit, offset }),
       total: countNotifications(filter),
@@ -107,8 +161,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const row = getNotification(id);
     if (!row) return reply.code(404).send({ error: 'notification not found' });
-    if (row.notification.status !== 'scheduled') {
-      return reply.code(409).send({ error: `chỉ hủy được notification ở trạng thái scheduled (hiện: ${row.notification.status})` });
+    const status = row.notification.status;
+
+    // recurring: gỡ repeatable job khỏi BullMQ rồi đánh dấu cancelled
+    if (status === 'recurring') {
+      const removed = await removeRecurringJob(id);
+      if (!removed) {
+        return reply.code(409).send({ error: 'không tìm thấy lịch lặp tương ứng trong queue' });
+      }
+      setStatus(id, 'cancelled');
+      recordEvent(id, 'cancelled', 'đã gỡ lịch lặp');
+      return { id, status: 'cancelled' };
+    }
+
+    if (status !== 'scheduled') {
+      return reply.code(409).send({ error: `chỉ hủy được notification ở trạng thái scheduled hoặc recurring (hiện: ${status})` });
     }
     const job = await notificationQueue.getJob(id);
     try {
@@ -135,4 +202,77 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // danh sách template khả dụng — tiện khám phá API
   app.get('/templates', async () => ({ templates: listTemplates() }));
+
+  // ===== TOPICS + BROADCAST =====
+
+  // đăng ký người nhận vào topic (idempotent — đăng ký lại không lỗi)
+  app.post('/topics/:topic/subscribers', async (req, reply) => {
+    const { topic } = req.params as { topic: string };
+    const parsed = subscribeSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const { recipient, channel } = parsed.data;
+    const created = subscribeTopic(topic, recipient, channel);
+    return reply.code(created ? 201 : 200).send({ topic, recipient, channel, created });
+  });
+
+  app.get('/topics', async () => ({ topics: listTopics() }));
+
+  app.get('/topics/:topic/subscribers', async (req) => {
+    const { topic } = req.params as { topic: string };
+    return { topic, subscribers: listTopicSubscribers(topic) };
+  });
+
+  app.delete('/topics/:topic/subscribers', async (req, reply) => {
+    const { topic } = req.params as { topic: string };
+    const parsed = subscribeSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const removed = unsubscribeTopic(topic, parsed.data.recipient, parsed.data.channel);
+    if (!removed) return reply.code(404).send({ error: 'subscriber không tồn tại trong topic' });
+    return { topic, ...parsed.data, removed: true };
+  });
+
+  // broadcast: 1 request → fan-out tới mọi subscriber của topic (trong worker)
+  app.post('/topics/:topic/send', async (req, reply) => {
+    const { topic } = req.params as { topic: string };
+    const subscribers = listTopicSubscribers(topic);
+    if (subscribers.length === 0) {
+      return reply.code(404).send({ error: `topic "${topic}" chưa có subscriber nào` });
+    }
+    const parsed = broadcastSendSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+    let body: string | null | undefined = parsed.data.body;
+    if (parsed.data.template) {
+      body = renderTemplate(parsed.data.template, parsed.data.params);
+      if (body === null) return reply.code(400).send({ error: `template "${parsed.data.template}" không tồn tại` });
+    }
+
+    const { id } = await enqueueBroadcast(topic, { subject: parsed.data.subject, body: body! });
+    return reply.code(202).send({ broadcastId: id, topic, subscribers: subscribers.length });
+  });
+
+  app.get('/broadcasts', async () => ({ broadcasts: listBroadcasts() }));
+
+  app.get('/broadcasts/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const broadcast = getBroadcast(id);
+    if (!broadcast) return reply.code(404).send({ error: 'broadcast not found' });
+    return broadcast;
+  });
+
+  // ===== PREFERENCES theo recipient =====
+
+  app.get('/preferences/:recipient', async (req) => {
+    const { recipient } = req.params as { recipient: string };
+    return { recipient, preferences: listPreferences(recipient) };
+  });
+
+  // tắt/bật kênh cho 1 người nhận — worker sẽ chặn gửi khi disabled
+  app.put('/preferences/:recipient', async (req, reply) => {
+    const { recipient } = req.params as { recipient: string };
+    const parsed = preferenceSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    setPreference(recipient, parsed.data.channel, parsed.data.enabled);
+    return { recipient, ...parsed.data };
+  });
 }

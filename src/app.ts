@@ -38,8 +38,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     if (!apiKey) return;
     const path = (req.url ?? '').split('?')[0];
     if (path === '/health') return;
-    const isProtected = path.startsWith('/admin/queues') ||
-      ((path.startsWith('/notifications') || path === '/metrics') && req.method !== 'GET');
+    const writePath = path.startsWith('/notifications') || path.startsWith('/topics') ||
+      path.startsWith('/broadcasts') || path.startsWith('/preferences') || path === '/metrics';
+    const isProtected = path.startsWith('/admin/queues') || (writePath && req.method !== 'GET');
     if (!isProtected) return;
     const authHeader = req.headers.authorization;
     const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : undefined;

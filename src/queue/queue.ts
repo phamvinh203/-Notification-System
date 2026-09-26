@@ -1,21 +1,27 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
 import { config } from '../config.js';
 import {
-  createNotificationWithOutbox, findByIdempotencyKey, getNotification,
-  getPendingOutbox, markOutboxDispatched, recordEvent, setStatus, type Channel, type Status,
+  createBroadcast, createNotification, createNotificationWithOutbox, deleteNotification, findByIdempotencyKey,
+  getNotification, getPendingOutbox, markOutboxDispatched, recordEvent, setStatus, type Channel, type Status,
 } from '../db.js';
 
 export const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
 
-export interface JobData {
+export interface SendJobData {
   notificationId: string;
   channel: Channel;
   recipient: string;
   subject?: string;
   body: string;
 }
+
+export interface BroadcastJobData {
+  broadcastId: string;
+}
+
+export type JobData = SendJobData | BroadcastJobData;
 
 // BullMQ: số nhỏ = ưu tiên cao hơn
 export const PRIORITY_MAP = { high: 1, normal: 5, low: 9 } as const;
@@ -29,6 +35,11 @@ export interface EnqueueInput {
   sendAt?: string; // ISO — có thì thành scheduled
   idempotencyKey?: string;
   priority?: PriorityName;
+  /** cron chuẩn (VD "0 8 * * *") — có thì thành lịch lặp, job repeatable thay vì outbox */
+  recurrence?: string;
+  /** broadcast fan-out truyền id deterministic để retry không tạo trùng */
+  id?: string;
+  broadcastId?: string;
 }
 
 export interface EnqueueResult {
@@ -68,7 +79,36 @@ export async function enqueueNotification(input: EnqueueInput): Promise<EnqueueR
     }
   }
 
-  const id = randomUUID();
+  const id = input.id ?? randomUUID();
+
+  // ===== RECURRING: lịch lặp cron — job repeatable trên BullMQ, không đi qua outbox
+  // (outbox là cơ chế one-shot; repeatable job tự bắn lại theo cron đến khi bị remove)
+  if (input.recurrence) {
+    try {
+      createNotification({
+        id, channel: input.channel, recipient: input.recipient, subject: input.subject,
+        body: input.body, status: 'recurring', scheduled_at: null,
+        idempotency_key: input.idempotencyKey ?? null, recurrence: input.recurrence,
+      });
+    } catch {
+      throw duplicateError(input, id);
+    }
+    try {
+      // repeat.key = notification id → tìm/gỡ lịch theo id được (BullMQ v5: job scheduler)
+      await notificationQueue.add(
+        'send',
+        { notificationId: id, channel: input.channel, recipient: input.recipient, subject: input.subject, body: input.body },
+        { ...JOB_OPTS, repeat: { pattern: input.recurrence, key: id } },
+      );
+    } catch (e) {
+      // cron pattern BullMQ chối bỏ → không để row mồ côi
+      deleteNotification(id);
+      throw new Error(`cron không hợp lệ: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    recordEvent(id, 'recurring_scheduled', `pattern: ${input.recurrence}`);
+    return { id, status: 'recurring' };
+  }
+
   const scheduledAt = input.sendAt ? new Date(input.sendAt) : undefined;
   const delay = scheduledAt ? Math.max(0, scheduledAt.getTime() - Date.now()) : undefined;
   const isScheduled = delay !== undefined && delay > 0;
@@ -81,21 +121,79 @@ export async function enqueueNotification(input: EnqueueInput): Promise<EnqueueR
     createNotificationWithOutbox({
       id, channel: input.channel, recipient: input.recipient, subject: input.subject,
       body: input.body, status, scheduled_at: scheduledAt?.toISOString() ?? null,
-      idempotency_key: input.idempotencyKey ?? null,
+      idempotency_key: input.idempotencyKey ?? null, broadcast_id: input.broadcastId ?? null,
     }, JSON.stringify({
       channel: input.channel, recipient: input.recipient, subject: input.subject,
       body: input.body, priority: input.priority, delay,
     }));
   } catch {
-    // race: 2 request cùng key chạy song song — unique index chặn, trả notification của request thắng
-    if (input.idempotencyKey) {
-      const existing = findByIdempotencyKey(input.idempotencyKey);
-      if (existing) return { id: existing.id, status: existing.status as Status, deduplicated: true };
-    }
-    throw new Error('không tạo được notification (idempotency conflict không tìm thấy row cũ)');
+    // idempotency key trùng hoặc broadcast fan-out retry (id deterministic trùng)
+    // → trả notification đã có; không khớp gì hết là lỗi thật
+    throw duplicateError(input, id);
   }
   recordEvent(id, 'enqueued', isScheduled ? `scheduled at ${scheduledAt?.toISOString()}` : 'immediate');
   return { id, status };
+}
+
+// conflict khi INSERT: idempotency key trùng → trả row cũ; fan-out retry (id trùng) → trả row đã có.
+// Không khớp gì hết → lỗi thật. enqueueSafe bọc lại để lấy EnqueueResult từ Error (SQLite sync + async flow).
+function duplicateError(input: EnqueueInput, explicitId?: string): Error {
+  const build = (row: { id: string; status: string }): Error => {
+    const e = new Error('deduplicated') as Error & { dedupe?: EnqueueResult };
+    e.dedupe = { id: row.id, status: row.status as Status, deduplicated: true };
+    return e;
+  };
+  if (input.idempotencyKey) {
+    const existing = findByIdempotencyKey(input.idempotencyKey);
+    if (existing) return build(existing);
+  }
+  if (explicitId) {
+    const existing = getNotification(explicitId);
+    if (existing) return build(existing.notification);
+  }
+  return new Error('không tạo được notification (conflict không tìm thấy row cũ)');
+}
+
+export async function enqueueSafe(input: EnqueueInput): Promise<EnqueueResult> {
+  try {
+    return await enqueueNotification(input);
+  } catch (e) {
+    const dedupe = (e as Error & { dedupe?: EnqueueResult }).dedupe;
+    if (dedupe) return dedupe;
+    throw e;
+  }
+}
+
+// ===== BROADCAST: 1 request gửi cho cả topic — fan-out chạy trong worker =====
+
+export async function enqueueBroadcast(
+  topic: string,
+  payload: { subject?: string; body: string },
+): Promise<{ id: string }> {
+  const id = randomUUID();
+  createBroadcast({ id, topic, subject: payload.subject, body: payload.body });
+  // job 'broadcast' do worker xử lý: đọc subscribers → tạo N notification (qua outbox)
+  await notificationQueue.add('broadcast', { broadcastId: id }, {
+    jobId: id,
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 1000 },
+    removeOnComplete: { count: 1000 },
+    removeOnFail: { count: 1000 },
+  });
+  // KHÔNG recordEvent cho broadcast — delivery_events FK tới notifications(id),
+  // còn broadcast id chỉ nằm trong bảng broadcasts (audit trail = row broadcasts + counts)
+  return { id };
+}
+
+/** id deterministic cho fan-out — broadcast job retry lại không tạo notification trùng */
+export function broadcastNotificationId(broadcastId: string, recipient: string, channel: string): string {
+  const h = createHash('sha256').update(`${broadcastId}:${recipient}:${channel}`).digest('hex').slice(0, 32);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+/** hủy lịch lặp: job scheduler của BullMQ v5 đặt key = notification id (xem nhánh recurring) */
+export async function removeRecurringJob(id: string): Promise<boolean> {
+  return notificationQueue.removeJobScheduler(id);
 }
 
 // dispatcher (chạy trong worker process): đọc outbox pending → push BullMQ → đánh dấu dispatched.
@@ -137,3 +235,4 @@ export async function replayNotification(id: string): Promise<EnqueueResult | 'n
   recordEvent(id, 'replayed');
   return { id, status: 'queued' };
 }
+

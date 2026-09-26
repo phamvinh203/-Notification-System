@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { clearTables, getNotification } from '../src/db.js';
+import type { SendJobData } from '../src/queue/queue.js';
 import { redisAvailable } from './helpers.js';
 
 const hasRedis = await redisAvailable();
@@ -64,7 +65,7 @@ describe.skipIf(!hasRedis)('queue: enqueueNotification + dispatch (cần Redis)'
     expect(job!.opts.attempts).toBe(3);
     expect(job!.opts.backoff).toEqual({ type: 'exponential', delay: 1000 });
     expect(job!.id).toBe(res.id);
-    expect(job!.data.notificationId).toBe(res.id);
+    expect((job!.data as SendJobData).notificationId).toBe(res.id);
   });
 
   it('priority: high/normal/low map sang số BullMQ (nhỏ = ưu tiên cao)', async () => {

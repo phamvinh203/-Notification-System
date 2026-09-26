@@ -42,12 +42,21 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 | Method | Path | Chức năng | Ghi chú |
 |---|---|---|---|
 | `GET` | `/health` | Health check | Luôn mở, không cần API key — dùng cho docker healthcheck |
-| `POST` | `/notifications` | Tạo yêu cầu gửi thông báo | Body: `{channel, recipient, subject?, body \| template, params?, sendAt?, priority?}`. Trả `202 {id, status}` |
-| `GET` | `/notifications` | Danh sách, có **phân trang** | Lọc theo `status`, `channel`; `limit` (1–100, default 20), `offset`. Trả `{items, total, limit, offset}` |
+| `POST` | `/notifications` | Tạo yêu cầu gửi thông báo | Body: `{channel, recipient, subject?, body \| template, params?, sendAt?, priority?, recurrence?}`. Trả `202 {id, status}`. Có `recurrence` (cron 5 trường) → thành **lịch lặp**, trả `202 {id, status: "recurring"}` |
+| `GET` | `/notifications` | Danh sách, có **phân trang** | Lọc theo `status`, `channel`, `broadcast` (broadcast id); `limit` (1–100, default 20), `offset`. Trả `{items, total, limit, offset}` |
 | `GET` | `/notifications/:id` | Chi tiết | Trả notification + **timeline delivery events** |
-| `DELETE` | `/notifications/:id` | Hủy notification | Chỉ hủy được khi đang `scheduled`, ngược lại trả `409` |
+| `DELETE` | `/notifications/:id` | Hủy notification | Hủy được khi `scheduled` **hoặc `recurring`** (gỡ job scheduler khỏi BullMQ), ngược lại trả `409` |
 | `POST` | `/notifications/:id/replay` | Đẩy lại job dead | Chỉ khi status `failed`; ngược lại `409` |
 | `GET` | `/templates` | Danh sách template | Tên các template `.hbs` khả dụng |
+| `POST` | `/topics/:topic/subscribers` | Đăng ký người nhận vào topic | Body `{recipient, channel}`; idempotent — đăng ký lại trả `200` (lần đầu `201`) |
+| `GET` | `/topics` | Danh sách topic + số subscriber | |
+| `GET` | `/topics/:topic/subscribers` | Danh sách subscriber của topic | |
+| `DELETE` | `/topics/:topic/subscribers` | Hủy đăng ký | Body `{recipient, channel}`; không tồn tại → `404` |
+| `POST` | `/topics/:topic/send` | **Broadcast** tới cả topic | Body `{subject?, body \| template, params?}`. Fan-out chạy trong worker; trả `202 {broadcastId, topic, subscribers}`. Topic rỗng → `404` |
+| `GET` | `/broadcasts` | Danh sách broadcast | Kèm counts `created/sent/failed/pending` |
+| `GET` | `/broadcasts/:id` | Chi tiết broadcast | |
+| `GET` | `/preferences/:recipient` | Xem preference người nhận | |
+| `PUT` | `/preferences/:recipient` | Bật/tắt kênh cho người nhận | Body `{channel, enabled}`; worker chặn gửi kênh bị tắt |
 | `GET` | `/metrics` | Prometheus metrics | Format `text/plain`; cùng chính sách auth như `/notifications*` |
 | `GET` | `/admin/queues` | Bull Board UI | Xem queue/retry/delayed job trực quan trên trình duyệt |
 
@@ -92,9 +101,9 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 
 ### 3.5 Delivery tracking bằng SQLite (`src/db.ts`)
 
-- 2 bảng: `notifications` (nội dung + trạng thái) và `delivery_events` (lịch sử từng bước, `AUTOINCREMENT` theo thứ tự thời gian).
+- 5 bảng: `notifications`, `delivery_events`, `outbox`, `broadcasts`, `topic_subscribers`, `preferences` (nội dung + trạng thái + lịch sử + nền tảng topic/preference).
 - Bật `PRAGMA journal_mode = WAL` cho đọc ghi song song tốt hơn.
-- **Trạng thái** của một notification: `scheduled → queued → processing → sent | failed | cancelled`.
+- **Trạng thái** của một notification: `scheduled → queued → processing → sent | failed | cancelled`, cùng 2 trạng thái đặc biệt: `recurring` (lịch lặp cron — row là lịch, không đổi trạng thái theo từng lần bắn) và `blocked` (worker bỏ gửi vì người nhận đã tắt kênh).
 - **Timeline events** được ghi lại: `enqueued → processing → (retry_scheduled)* → sent | dead`, và `cancelled` nếu bị hủy.
   - Chi tiết thú vị: khi hết 3 lượt retry, DB status là `failed` nhưng event ghi là `dead` — tra cứu trạng thái nhìn `status`, xem lịch sử nhìn `events`.
 - File DB mặc định `notifications.db` ở thư mục gốc, đổi được qua biến `DB_PATH`.
@@ -114,7 +123,7 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 
 - **Auth API key** với chính sách **reads-open**: set `API_KEY` → mọi `GET` (danh sách, chi tiết, templates, metrics) mở cho browser đọc; thao tác ghi (`POST`/`DELETE`/replay) và Bull Board `/admin/queues` yêu cầu header `x-api-key`, sai/thiếu trả `401`. `/health` luôn mở. Không set biến → tắt auth (dev local). Hiện thực qua preHandler hook trong `src/app.ts`.
 - **Phân trang** cho danh sách: `{items, total, limit, offset}` thay vì trả toàn bộ mảng.
-- **54 test tự động** (vitest): db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration qua Fastify `inject`), queue scheduling + priority, outbox pattern, worker + retry + replay + cancelled-guard. Test cần Redis **tự skip** khi Redis không chạy — local không bật Docker vẫn chạy được bộ unit.
+- **76 test tự động** (vitest): db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration qua Fastify `inject`), queue scheduling + priority, outbox pattern, worker + retry + replay + cancelled-guard, topics/broadcast/preferences/recurring. Test cần Redis **tự skip** khi Redis không chạy — local không bật Docker vẫn chạy được bộ unit.
 - **Docker hóa**: `Dockerfile` (node:22-alpine, chạy TS trực tiếp bằng tsx) + `docker-compose.yml` với 3 service `redis` / `api` / `worker`, có healthcheck (`127.0.0.1` tường minh — `localhost` trong container resolve sang `::1` sẽ refused vì Node listen IPv4), SQLite persist qua volume `./data`.
 - **CI**: GitHub Actions chạy `typecheck` + `test` trên mỗi push/PR, cấp service Redis 7.
 - **Tách entry API / Worker**: `src/index.ts` (API) và `src/start-worker.ts` (worker + outbox dispatcher, graceful shutdown SIGINT/SIGTERM).
@@ -203,7 +212,7 @@ docker-compose.yml        # 3 service: redis / api / worker
 6. **Auth mới ở mức API key tĩnh** — chưa có multi-tenant, hết hạn, thu hồi key.
 7. **Metrics mới là gauges trạng thái** — chưa có histogram latency, chưa gắn Prometheus/Grafana service vào compose.
 
-> Đã hoàn thành: nền tảng chất lượng (test, Docker, CI, phân trang, auth, tách process) — 2026-09-26; tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) — 2026-09-26; kiến trúc nâng cao (outbox pattern, Prometheus metrics) — 2026-09-26; dashboard frontend — 2026-09-26; **ship v1.0: Fastify serve dashboard same-origin (SPA fallback theo Accept header) + Prometheus & Grafana vào compose + Dockerfile multi-stage build UI** — 2026-09-26.
+> Đã hoàn thành: nền tảng chất lượng (test, Docker, CI, phân trang, auth, tách process) — 2026-09-26; tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) — 2026-09-26; kiến trúc nâng cao (outbox pattern, Prometheus metrics) — 2026-09-26; dashboard frontend — 2026-09-26; ship v1.0: Fastify serve dashboard same-origin (SPA fallback theo Accept header) + Prometheus & Grafana vào compose + Dockerfile multi-stage build UI — 2026-09-26; provider thật (SMTP Ethereal/Gmail, Resend, Twilio) — 2026-09-26; **nền tảng notification: topic/broadcast, preference theo recipient, lịch lặp cron** — 2026-09-27.
 
 ### 3.11 Ship v1.0 — một lệnh có cả sản phẩm + monitoring
 
@@ -212,6 +221,29 @@ docker-compose.yml        # 3 service: redis / api / worker
 - **Dockerfile 2 stage**: stage `ui-build` chạy `npm ci && npm run build` cho dashboard; stage runtime copy `dist` vào `/app/dashboard-dist`.
 - **Prometheus** (`ops/prometheus/prometheus.yml`): scrape `api:3000/metrics` mỗi 15s bằng `Authorization: Bearer <API_KEY>` — lý do auth hook nhận thêm Bearer.
 - **Grafana** (`ops/grafana/`): datasource Prometheus + dashboard "Notification System" provision tự động (stat trạng thái, timeseries `bullmq_jobs`/`outbox_pending`, barchart theo kênh). Port 3001, login admin/admin (demo).
+
+### 3.12 Nền tảng notification: topic/broadcast, preference, lịch lặp cron
+
+**Topic + Broadcast** — gửi 1 lần cho cả nhóm người nhận:
+
+1. Đăng ký subscriber: `POST /topics/:topic/subscribers` `{recipient, channel}` — idempotent (unique `topic+recipient+channel`).
+2. Broadcast: `POST /topics/:topic/send` — API chỉ ghi 1 row `broadcasts` + đẩy 1 job `broadcast` lên BullMQ. **Fan-out chạy trong worker**: đọc subscribers → tạo 1 notification cho mỗi người (qua outbox — giữ đúng kiến trúc) → API trả ngay `202`, không chặn.
+3. **Idempotent khi retry**: mỗi notification fan-out có id deterministic `sha256(broadcastId:recipient:channel)` — job broadcast retry lại (crash giữa chừng) không tạo notification trùng, hàm `enqueueSafe` trả về row đã có thay vì lỗi.
+4. Counts realtime: `GET /broadcasts/:id` tính `created/sent/failed/pending` bằng SUM trực tiếp từ bảng notifications.
+
+**Preference theo recipient** — người nhận quyền kiểm soát kênh:
+
+- `PUT /preferences/:recipient` `{channel, enabled}` — upsert vào bảng `preferences`.
+- Worker kiểm tra trước khi gọi provider: kênh bị tắt → status `blocked`, event `blocked_preference`, **không tốn lượt gửi provider**. Guard `completed` không đè status `blocked` về `sent`.
+- Broadcast lọc sẵn ngay từ khâu fan-out — subscriber tắt kênh không tạo notification.
+
+**Lịch lặp cron** (`recurrence` trên `POST /notifications`):
+
+- Cron 5 trường (validate bằng `cron-parser` trước khi enqueue, sai → `400`), ví dụ `"0 8 * * *"` = 8h sáng mỗi ngày.
+- Row notification có status `recurring` — là **LỊCH**, không phải lần gửi cụ thể: worker không đổi status mỗi lần bắn, lần bắn fail chỉ ghi event `fire_failed` (không rơi `failed` vĩnh viễn — cron tự bắn lần sau), mỗi lần gửi xong ghi event `sent` như thường.
+- Job repeatable BullMQ với `repeat: { pattern, key: id }` — key = notification id để tìm/gỡ được (BullMQ v5: job scheduler, `removeJobScheduler(id)`; API cũ `getRepeatableJobs()` không trả job id).
+- Hủy lịch: `DELETE /notifications/:id` khi status `recurring` → gỡ job scheduler khỏi BullMQ + đánh dấu `cancelled`.
+- Đánh đổi đã ghi nhận: lịch lặp KHÔNG đi qua outbox (outbox là cơ chế one-shot) — job scheduler nằm sẵn trên BullMQ, crash Redis là mất schedule (tương đương mức độ mất mát của chính BullMQ).
 
 ---
 
@@ -232,3 +264,5 @@ docker-compose.yml        # 3 service: redis / api / worker
 | `9065480` | Dashboard frontend: 4 trang (Tổng quan/Danh sách/Chi tiết/Tạo mới) + đổi chính sách auth reads-open + GUI test bằng browser |
 | `d072be1` | Ship v1.0: Fastify serve dashboard (SPA fallback Accept header), Dockerfile multi-stage build UI, Prometheus + Grafana vào compose, auth nhận thêm Bearer |
 | *(chưa commit)* | Provider thật: email qua SMTP thật (preset Ethereal zero-config + host riêng qua Nodemailer) / Resend API, SMS qua Twilio REST API; send() trả info ghi vào event sent |
+| *(chưa commit)* | Secrets qua file .env (gitignored), compose không còn plaintext password |
+| *(chưa commit)* | Nền tảng notification: topic/broadcast (fan-out trong worker, id deterministic), preference recipient (status blocked), lịch lặp cron (job scheduler BullMQ v5, status recurring) — 76 test |

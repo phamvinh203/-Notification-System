@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { clearTables, countOutbox, getNotification, setStatus } from '../src/db.js';
+import type { SendJobData } from '../src/queue/queue.js';
 import { redisAvailable } from './helpers.js';
 
 const hasRedis = await redisAvailable();
@@ -37,9 +38,10 @@ describe.skipIf(!hasRedis)('outbox pattern (cần Redis)', () => {
 
     const job = await queueMod.notificationQueue.getJob(res.id);
     expect(job).toBeTruthy();
-    expect(job!.data.notificationId).toBe(res.id);
-    expect(job!.data.channel).toBe('sms');
-    expect(job!.data.body).toBe('otp-1');
+    const data = job!.data as SendJobData;
+    expect(data.notificationId).toBe(res.id);
+    expect(data.channel).toBe('sms');
+    expect(data.body).toBe('otp-1');
     expect(job!.opts.priority).toBe(1);
   });
 
