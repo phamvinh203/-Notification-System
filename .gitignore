@@ -6,3 +6,4 @@ dist/
 .superpowers/
 .tmp/
 data/
+.env

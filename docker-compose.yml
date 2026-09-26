@@ -39,28 +39,22 @@ services:
       REDIS_URL: redis://redis:6379
       DB_PATH: /app/data/notifications.db
       FAIL_RATE: "0.3"
-      # ===== EMAIL THẬT =====
-      # SMTP thật zero-config (xem thư online qua link trong timeline, KHÔNG vào inbox cá nhân):
-      # EMAIL_MODE: smtp
-      # SMTP_PRESET: ethereal
-      # SMTP vào inbox thật (VD Gmail: SMTP_HOST=smtp.gmail.com, SMTP_SECURE=true, SMTP_PORT=465,
-      #   SMTP_USER=<email>, SMTP_PASS=<app-password 16 ký tự>):
-      # EMAIL_MODE: smtp
-      # SMTP_HOST: smtp.gmail.com
-      # SMTP_SECURE: "true"
-      # SMTP_PORT: "465"
-      # SMTP_USER: you@gmail.com
-      # SMTP_PASS: xxxx xxxx xxxx xxxx
-      # EMAIL_FROM: "Notification <you@gmail.com>"
-      # Hoặc Resend (inbox thật, cần API key miễn phí tại resend.com):
-      # EMAIL_MODE: resend
-      # RESEND_API_KEY: re_xxxxxxxx
-      # RESEND_FROM: "Notification <onboarding@resend.dev>"
-      # ===== SMS THẬT (Twilio trial — chỉ gửi tới số đã verify) =====
-      # SMS_MODE: twilio
-      # TWILIO_ACCOUNT_SID: ACxxxxxxxx
-      # TWILIO_AUTH_TOKEN: xxxxxxxx
-      # TWILIO_FROM: "+1xxxxxxxxxx"
+      # ===== Provider email/SMS — giá trị thật nằm trong file .env (KHÔNG commit) =====
+      # Mẫu: .env.example. Copy .env.example → .env, điền credentials, rồi:
+      #   docker compose up -d worker
+      # Thêm preset Ethereal (SMTP thật zero-config): SMTP_PRESET=ethereal trong .env
+      EMAIL_MODE: ${EMAIL_MODE:-mock}
+      SMTP_PRESET: ${SMTP_PRESET:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      SMS_MODE: ${SMS_MODE:-mock}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM: ${TWILIO_FROM:-}
     volumes:
       - ./data:/app/data
     depends_on:
