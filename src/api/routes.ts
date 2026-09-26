@@ -41,7 +41,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(409).send({ error: `chỉ hủy được notification ở trạng thái scheduled (hiện: ${row.notification.status})` });
     }
     const job = await notificationQueue.getJob(id);
-    await job?.remove();
+    try {
+      await job?.remove();
+    } catch {
+      // job vừa bị worker lock (bắt đầu gửi) — không hủy được nữa
+      return reply.code(409).send({ error: 'notification đã bắt đầu gửi, không hủy được' });
+    }
     setStatus(id, 'cancelled');
     recordEvent(id, 'cancelled');
     return { id, status: 'cancelled' };
