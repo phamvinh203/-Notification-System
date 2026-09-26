@@ -124,9 +124,9 @@ describe.skipIf(!hasRedis)('API integration (cần Redis)', () => {
       expect(res.body).toContain('bullmq_jobs');
     });
 
-    it('GET /metrics thiếu key → 401', async () => {
+    it('GET /metrics là đọc mở — không cần key', async () => {
       const res = await app.inject({ method: 'GET', url: '/metrics' });
-      expect(res.statusCode).toBe(401);
+      expect(res.statusCode).toBe(200);
     });
   });
 
@@ -141,9 +141,16 @@ describe.skipIf(!hasRedis)('API integration (cần Redis)', () => {
       expect(res.statusCode).toBe(401);
     });
 
-    it('GET danh sách thiếu key → 401', async () => {
+    it('DELETE và replay là thao tác ghi → thiếu key vẫn 401', async () => {
+      const delRes = await del('/notifications/anything', null);
+      expect(delRes.statusCode).toBe(401);
+      const replayRes = await app.inject({ method: 'POST', url: '/notifications/anything/replay' });
+      expect(replayRes.statusCode).toBe(401);
+    });
+
+    it('GET danh sách là đọc mở — không cần key (chính sách reads-open)', async () => {
       const res = await get('/notifications', null);
-      expect(res.statusCode).toBe(401);
+      expect(res.statusCode).toBe(200);
     });
 
     it('/health luôn mở, không cần key', async () => {

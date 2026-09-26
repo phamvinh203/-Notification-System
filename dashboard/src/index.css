@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+/* Design system (ui-ux-pro-max): Glassmorphism dark tech — density 8
+   Dark mặc định, light variant đảo theo color-dark-mode (desaturated, test riêng contrast) */
+:root {
+  --bg: #0f172a;
+  --fg: #f8fafc;
+  --card: #1b2336;
+  --muted: #272f42;
+  --muted-fg: #94a3b8;
+  --line: rgba(148, 163, 184, 0.22);
+  --accent: #22c55e;
+  --accent-fg: #0f172a;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --info: #38bdf8;
+  --ring: #f8fafc;
+  color-scheme: dark;
+}
+
+:root.light {
+  --bg: #f1f5f9;
+  --fg: #0f172a;
+  --card: #ffffff;
+  --muted: #e2e8f0;
+  --muted-fg: #475569;
+  --line: rgba(15, 23, 42, 0.14);
+  --accent: #15803d;
+  --accent-fg: #ffffff;
+  --danger: #dc2626;
+  --warning: #b45309;
+  --info: #0369a1;
+  --ring: #0f172a;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+  --color-card: var(--card);
+  --color-muted: var(--muted);
+  --color-muted-fg: var(--muted-fg);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-danger: var(--danger);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --font-sans: "Fira Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, "Cascadia Mono", monospace;
+}
+
+body {
+  @apply bg-bg text-fg font-sans antialiased;
+}
+
+/* card kiểu glass: nền bán trong + blur nhẹ — chỉ dùng cho khối nổi, giữ bảng dữ liệu đặc để dễ đọc */
+.glass {
+  background: color-mix(in srgb, var(--card) 78%, transparent);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--line);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* số liệu bảng dùng tabular figures chống nhảy cột */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

@@ -24,13 +24,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     return reply.type(registry.contentType).send(await registry.metrics());
   });
 
-  // API key auth: preHandler chạy cho mọi route đăng ký sau nó, kể cả route của Bull Board plugin
+  // API key auth: preHandler chạy cho mọi route đăng ký sau nó, kể cả route của Bull Board plugin.
+  // Chính sách: GET đọc mở (list/detail/templates/metrics — browser/dashboard đọc được),
+  // mọi thao tác ghi (POST/DELETE/replay) + Bull Board admin UI vẫn cần key.
   app.addHook('preHandler', async (req, reply) => {
     const apiKey = opts.apiKey;
     if (!apiKey) return;
     const path = (req.url ?? '').split('?')[0];
     if (path === '/health') return;
-    if (!path.startsWith('/notifications') && !path.startsWith('/admin/queues') && path !== '/metrics') return;
+    const isProtected = path.startsWith('/admin/queues') ||
+      ((path.startsWith('/notifications') || path === '/metrics') && req.method !== 'GET');
+    if (!isProtected) return;
     if (req.headers['x-api-key'] !== apiKey) {
       return reply.code(401).send({ error: 'thiếu hoặc sai header x-api-key' });
     }

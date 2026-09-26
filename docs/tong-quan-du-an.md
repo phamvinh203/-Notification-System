@@ -106,9 +106,9 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 
 ### 3.8 Nền tảng chất lượng
 
-- **Auth API key**: set biến `API_KEY` → mọi endpoint `/notifications*`, Bull Board `/admin/queues` và `/metrics` yêu cầu header `x-api-key`, sai/thiếu trả `401`. `/health` luôn mở. Không set biến → tắt auth (dev local). Hiện thực qua preHandler hook trong `src/app.ts`.
+- **Auth API key** với chính sách **reads-open**: set `API_KEY` → mọi `GET` (danh sách, chi tiết, templates, metrics) mở cho browser đọc; thao tác ghi (`POST`/`DELETE`/replay) và Bull Board `/admin/queues` yêu cầu header `x-api-key`, sai/thiếu trả `401`. `/health` luôn mở. Không set biến → tắt auth (dev local). Hiện thực qua preHandler hook trong `src/app.ts`.
 - **Phân trang** cho danh sách: `{items, total, limit, offset}` thay vì trả toàn bộ mảng.
-- **53 test tự động** (vitest): db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration qua Fastify `inject`), queue scheduling + priority, outbox pattern, worker + retry + replay + cancelled-guard. Test cần Redis **tự skip** khi Redis không chạy — local không bật Docker vẫn chạy được bộ unit.
+- **54 test tự động** (vitest): db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration qua Fastify `inject`), queue scheduling + priority, outbox pattern, worker + retry + replay + cancelled-guard. Test cần Redis **tự skip** khi Redis không chạy — local không bật Docker vẫn chạy được bộ unit.
 - **Docker hóa**: `Dockerfile` (node:22-alpine, chạy TS trực tiếp bằng tsx) + `docker-compose.yml` với 3 service `redis` / `api` / `worker`, có healthcheck (`127.0.0.1` tường minh — `localhost` trong container resolve sang `::1` sẽ refused vì Node listen IPv4), SQLite persist qua volume `./data`.
 - **CI**: GitHub Actions chạy `typecheck` + `test` trên mỗi push/PR, cấp service Redis 7.
 - **Tách entry API / Worker**: `src/index.ts` (API) và `src/start-worker.ts` (worker + outbox dispatcher, graceful shutdown SIGINT/SIGTERM).
@@ -127,6 +127,16 @@ Gửi ngay: dispatcher đẩy job liền (poll 500ms). Hẹn giờ: payload ch�
 - `GET /metrics` (prom-client, format Prometheus): gauges `notifications_by_status`, `notifications_by_channel`, `outbox_pending`, `bullmq_jobs{state}` + default process metrics. Gauges tính **trực tiếp từ SQLite + Redis lúc scrape** — realtime và đúng cho dù api/worker là 2 process riêng (không cần counter in-memory).
 - Timeline `delivery_events` trong DB + Bull Board UI + JSON logger của Fastify.
 - Docker healthcheck `/health` cho container api.
+
+### 3.10 Dashboard frontend (mục 4)
+
+Dashboard React ở `dashboard/` (Vite + TS + Tailwind v4 + Phosphor icons, react-router) — design system sinh từ skill ui-ux-pro-max: **glassmorphism dark tech** (nền `#0F172A`, accent xanh trạng thái `#22C55E`), font Fira Code/Fira Sans, density 8, dark mặc định + light mode, tôn trọng `prefers-reduced-motion`.
+
+- **Tổng quan**: stat tiles trạng thái + queue BullMQ + bar theo kênh, poll `/metrics` mỗi 3s có nút pause, nhãn "Cập nhật lúc …" và cảnh báo stale.
+- **Thông báo**: bảng lọc status/channel + phân trang, hành động hủy (confirm dialog) và replay, auto-refresh 5s tùy chọn.
+- **Chi tiết**: thông tin + nội dung + **timeline delivery events** màu theo loại event; tự poll 2s khi notification đang chạy (scheduled/queued/processing).
+- **Tạo mới**: form chọn kênh (radio card), recipient helper theo kênh, body HOẶC template + params JSON (validate), priority, hẹn giờ, Idempotency-Key, **preview payload live**, báo lỗi server rõ nguyên nhân + cách khắc phục (401 → gợi ý đặt API key).
+- API key thao tác ghi nhập ở topbar, lưu `localStorage`. Dev proxy `/api` → `:3000` (prefix riêng tránh đụng SPA route `/notifications`).
 
 ---
 
@@ -204,4 +214,5 @@ docker-compose.yml        # 3 service: redis / api / worker
 | `c13dd29` | Demo script end-to-end + README |
 | `66840a7` | Fix: khai báo ioredis trực tiếp (pin v5 khớp BullMQ) + chặn race DELETE-vs-worker (500 → 409) |
 | `58588b6`…`6f2ff7f` | Nền tảng chất lượng (buildApp, tách entry, /health, phân trang, auth, 30 test, Docker, CI) + tính năng notification "thật" hơn (idempotency, template, webhook, replay, rate limit, priority) |
-| *(chưa commit)* | Kiến trúc nâng cao: **outbox pattern** (transaction DB+outbox, dispatcher, guard cancelled) + **Prometheus /metrics** + fix healthcheck IPv6 |
+| `cbed309` | Kiến trúc nâng cao: outbox pattern (transaction DB+outbox, dispatcher, guard cancelled) + Prometheus /metrics + fix healthcheck IPv6 |
+| *(chưa commit)* | Dashboard frontend: 4 trang (Tổng quan/Danh sách/Chi tiết/Tạo mới) + đổi chính sách auth reads-open + GUI test bằng browser |

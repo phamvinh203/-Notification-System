@@ -51,15 +51,29 @@ npm run demo
 
 ## Auth (API key)
 
-Set biến `API_KEY` → bật auth. Request thiếu hoặc sai header `x-api-key` nhận `401`.
+Set biến `API_KEY` → bật auth với chính sách **reads-open**:
 
-- Áp dụng cho **tất cả** endpoint `/notifications*` và **Bull Board** `/admin/queues`.
+- **Đọc mở (không cần key)**: mọi `GET` — danh sách, chi tiết, `/templates`, `/metrics`. Browser mở trực tiếp URL được.
+- **Cần key** (header `x-api-key`): mọi thao tác ghi — `POST` tạo/replay, `DELETE` hủy — và **Bull Board** `/admin/queues`.
 - `GET /health` luôn mở (dùng cho docker healthcheck).
 - Không set `API_KEY` → tắt auth hoàn toàn (tiện dev local).
 
 ```bash
-curl -H "x-api-key: dev-secret-123" http://localhost:3000/notifications
+curl -X POST http://localhost:3000/notifications -H "x-api-key: dev-secret-123" ...
 ```
+
+## Dashboard (frontend)
+
+Dashboard React (Vite + TS + Tailwind v4) ở thư mục `dashboard/` — dark glassmorphism, có light mode:
+
+```bash
+# terminal 3 (sau khi npm run dev backend đang chạy):
+cd dashboard
+npm install
+npm run dev        # http://localhost:5173 — proxy /api về :3000
+```
+
+4 trang: **Tổng quan** (metrics realtime 3s, có pause), **Thông báo** (bảng lọc/phân trang, hủy/replay), **Chi tiết** (timeline delivery events tự live khi job đang chạy), **Tạo mới** (chọn kênh, template + params, preview payload, idempotency key). API key cho thao tác ghi nhập ở thanh trên cùng (lưu localStorage).
 
 ## API
 
@@ -115,7 +129,7 @@ npm test          # chạy 1 lần
 npm run test:watch
 ```
 
-- **53 test**: db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration), queue scheduling + priority, **outbox pattern**, worker + retry + replay + cancelled-guard (integration).
+- **54 test**: db layer (unit), REST API + auth + phân trang + idempotency + template + webhook + rate limit + metrics (integration), queue scheduling + priority, **outbox pattern**, worker + retry + replay + cancelled-guard (integration).
 - Test cần Redis sẽ **tự skip** nếu Redis không chạy — local không bật Docker vẫn được bộ unit test; **CI luôn chạy đủ** (GitHub Actions cấp service Redis).
 - Chạy từng process riêng khi debug: `npm run dev:api` / `npm run dev:worker`.
 
